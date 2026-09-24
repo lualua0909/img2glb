@@ -1,0 +1,53 @@
+# --- Runtime data (HF + rembg weights, outputs, Postgres, worker jobs, worker-config.json, logs) ---
+/data/
+*.log
+*.pid
+
+# --- Upstream Hunyuan3D-2 / 2.1 repos (cloned separately, have their own .git; see docs/adr) ---
+/Hunyuan3D-2/
+/Hunyuan3D-2.1/
+
+# --- Generated 3D artifacts at root ---
+/*.glb
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Node / Next.js ---
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+.pnpm-debug.log*
+npm-debug.log*
+
+# --- Model weights ---
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.onnx
+
+# --- Env / secrets ---
+.env
+.env.*
+!.env.example
+*.pem
+
+# --- OS / editor ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# --- Claude Code local files ---
+CLAUDE.local.md
+.claude/settings.local.json

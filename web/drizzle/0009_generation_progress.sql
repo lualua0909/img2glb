@@ -1,0 +1,1 @@
+ALTER TABLE "generation" ADD COLUMN "progress" integer;

@@ -1,0 +1,206 @@
+diff --git a/hy3dgen/texgen/custom_rasterizer/lib/custom_rasterizer_kernel/rasterizer.cpp b/hy3dgen/texgen/custom_rasterizer/lib/custom_rasterizer_kernel/rasterizer.cpp
+index 4af6eeb..b3d8ceb 100644
+--- a/hy3dgen/texgen/custom_rasterizer/lib/custom_rasterizer_kernel/rasterizer.cpp
++++ b/hy3dgen/texgen/custom_rasterizer/lib/custom_rasterizer_kernel/rasterizer.cpp
+@@ -12,7 +12,7 @@ void rasterizeTriangleCPU(int idx, float* vt0, float* vt1, float* vt2, int width
+         for (int py = y_min; py < y_max + 1; ++py) {
+             if (py < 0 || py >= height)
+                 continue;
+-            float vt[2] = {px + 0.5, py + 0.5};
++            float vt[2] = {px + 0.5f, py + 0.5f};
+             float baryCentricCoordinate[3];
+             calculateBarycentricCoordinate(vt0, vt1, vt2, vt, baryCentricCoordinate);
+             if (isBarycentricCoordInBounds(baryCentricCoordinate)) {
+@@ -128,8 +128,13 @@ std::vector<torch::Tensor> rasterize_image(torch::Tensor V, torch::Tensor F, tor
+     int device_id = V.get_device();
+     if (device_id == -1)
+         return rasterize_image_cpu(V, F, D, width, height, occlusion_truncation, use_depth_prior);
++#ifdef CPU_ONLY
++    TORCH_CHECK(false, "custom_rasterizer was built without CUDA: pass CPU tensors");
++    return {};
++#else
+     else
+         return rasterize_image_gpu(V, F, D, width, height, occlusion_truncation, use_depth_prior);
++#endif
+ }
+ 
+ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+diff --git a/hy3dgen/texgen/custom_rasterizer/lib/custom_rasterizer_kernel/rasterizer.h b/hy3dgen/texgen/custom_rasterizer/lib/custom_rasterizer_kernel/rasterizer.h
+index cf4f987..21231ff 100644
+--- a/hy3dgen/texgen/custom_rasterizer/lib/custom_rasterizer_kernel/rasterizer.h
++++ b/hy3dgen/texgen/custom_rasterizer/lib/custom_rasterizer_kernel/rasterizer.h
+@@ -4,7 +4,12 @@
+ #include <torch/extension.h>
+ #include <vector>
+ #include <ATen/ATen.h>
++#ifdef CPU_ONLY
++#define __host__
++#define __device__
++#else
+ #include <ATen/cuda/CUDAContext.h> // For CUDA context
++#endif
+ 
+ #define INT64 unsigned long long
+ #define MAXINT 2147483647
+diff --git a/hy3dgen/texgen/custom_rasterizer/setup.py b/hy3dgen/texgen/custom_rasterizer/setup.py
+index 3e312a7..9437a4f 100644
+--- a/hy3dgen/texgen/custom_rasterizer/setup.py
++++ b/hy3dgen/texgen/custom_rasterizer/setup.py
+@@ -1,15 +1,21 @@
+ from setuptools import setup, find_packages
+-from torch.utils.cpp_extension import BuildExtension, CUDAExtension
++from torch.utils.cpp_extension import CUDA_HOME, BuildExtension, CppExtension, CUDAExtension
+ 
+ # build custom rasterizer
+ # build with `python setup.py install`
+-# nvcc is needed
++# nvcc is needed for the CUDA kernel; without a CUDA toolkit (e.g. macOS) a CPU-only kernel is built
+ 
+-custom_rasterizer_module = CUDAExtension('custom_rasterizer_kernel', [
+-    'lib/custom_rasterizer_kernel/rasterizer.cpp',
+-    'lib/custom_rasterizer_kernel/grid_neighbor.cpp',
+-    'lib/custom_rasterizer_kernel/rasterizer_gpu.cu',
+-])
++if CUDA_HOME is not None:
++    custom_rasterizer_module = CUDAExtension('custom_rasterizer_kernel', [
++        'lib/custom_rasterizer_kernel/rasterizer.cpp',
++        'lib/custom_rasterizer_kernel/grid_neighbor.cpp',
++        'lib/custom_rasterizer_kernel/rasterizer_gpu.cu',
++    ])
++else:
++    custom_rasterizer_module = CppExtension('custom_rasterizer_kernel', [
++        'lib/custom_rasterizer_kernel/rasterizer.cpp',
++        'lib/custom_rasterizer_kernel/grid_neighbor.cpp',
++    ], define_macros=[('CPU_ONLY', None)])
+ 
+ setup(
+     packages=find_packages(),
+diff --git a/hy3dgen/texgen/hunyuanpaint/pipeline.py b/hy3dgen/texgen/hunyuanpaint/pipeline.py
+index 38f3777..2d6c032 100644
+--- a/hy3dgen/texgen/hunyuanpaint/pipeline.py
++++ b/hy3dgen/texgen/hunyuanpaint/pipeline.py
+@@ -219,7 +219,7 @@ class HunyuanPaintPipeline(StableDiffusionPipeline):
+             scheduler.alphas_cumprod.numpy(),
+             timesteps=scheduler.config.num_train_timesteps,
+             ddim_timesteps=30,
+-        ).to('cuda')
++        )
+         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
+         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
+         self.is_turbo = False
+@@ -288,7 +288,7 @@ class HunyuanPaintPipeline(StableDiffusionPipeline):
+                     if img.shape[2] > 3:
+                         alpha = img[:, :, 3:]
+                         img = img[:, :, :3] * alpha + bg_c * (1 - alpha)
+-                    img = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).contiguous().half().to("cuda")
++                    img = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).contiguous().half().to(device)
+                     view_imgs.append(img)
+                 view_imgs = torch.cat(view_imgs, dim=0)
+                 images_tensor.append(view_imgs.unsqueeze(0))
+@@ -595,9 +595,9 @@ class HunyuanPaintPipeline(StableDiffusionPipeline):
+         if self.is_turbo:
+             bsz = 3
+             N_gen = 15
+-            index = torch.range(29, 0, -bsz, device='cuda').long()
++            index = torch.range(29, 0, -bsz).long()
+             timesteps = self.solver.ddim_timesteps[index]
+-            self.scheduler.set_timesteps(timesteps=timesteps.cpu(), device='cuda')
++            self.scheduler.set_timesteps(timesteps=timesteps.cpu(), device=device)
+         else:
+             timesteps, num_inference_steps = retrieve_timesteps(
+                 self.scheduler, num_inference_steps, device, timesteps, sigmas
+diff --git a/hy3dgen/texgen/pipelines.py b/hy3dgen/texgen/pipelines.py
+index 6d6b89f..84d8d2f 100644
+--- a/hy3dgen/texgen/pipelines.py
++++ b/hy3dgen/texgen/pipelines.py
+@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
+ 
+ class Hunyuan3DTexGenConfig:
+ 
+-    def __init__(self, light_remover_ckpt_path, multiview_ckpt_path, subfolder_name):
+-        self.device = 'cuda'
++    def __init__(self, light_remover_ckpt_path, multiview_ckpt_path, subfolder_name, device='cuda'):
++        self.device = device
+         self.light_remover_ckpt_path = light_remover_ckpt_path
+         self.multiview_ckpt_path = multiview_ckpt_path
+ 
+@@ -52,7 +52,7 @@ class Hunyuan3DTexGenConfig:
+ 
+ class Hunyuan3DPaintPipeline:
+     @classmethod
+-    def from_pretrained(cls, model_path, subfolder='hunyuan3d-paint-v2-0-turbo'):
++    def from_pretrained(cls, model_path, subfolder='hunyuan3d-paint-v2-0-turbo', device='cuda'):
+         original_model_path = model_path
+         if not os.path.exists(model_path):
+             # try local path
+@@ -74,24 +74,26 @@ class Hunyuan3DPaintPipeline:
+                     )
+                     delight_model_path = os.path.join(model_path, 'hunyuan3d-delight-v2-0')
+                     multiview_model_path = os.path.join(model_path, subfolder)
+-                    return cls(Hunyuan3DTexGenConfig(delight_model_path, multiview_model_path, subfolder))
++                    return cls(Hunyuan3DTexGenConfig(delight_model_path, multiview_model_path, subfolder, device))
+                 except Exception:
+                     import traceback
+                     traceback.print_exc()
+                     raise RuntimeError(f"Something wrong while loading {model_path}")
+             else:
+-                return cls(Hunyuan3DTexGenConfig(delight_model_path, multiview_model_path, subfolder))
++                return cls(Hunyuan3DTexGenConfig(delight_model_path, multiview_model_path, subfolder, device))
+         else:
+             delight_model_path = os.path.join(model_path, 'hunyuan3d-delight-v2-0')
+             multiview_model_path = os.path.join(model_path, subfolder)
+-            return cls(Hunyuan3DTexGenConfig(delight_model_path, multiview_model_path, subfolder))
++            return cls(Hunyuan3DTexGenConfig(delight_model_path, multiview_model_path, subfolder, device))
+             
+     def __init__(self, config):
+         self.config = config
+         self.models = {}
++        # custom_rasterizer only has CUDA and CPU kernels: render on CPU for other devices (e.g. mps)
+         self.render = MeshRender(
+             default_resolution=self.config.render_size,
+-            texture_size=self.config.texture_size)
++            texture_size=self.config.texture_size,
++            device=self.config.device if str(self.config.device).startswith('cuda') else 'cpu')
+ 
+         self.load_models()
+ 
+diff --git a/hy3dgen/texgen/utils/dehighlight_utils.py b/hy3dgen/texgen/utils/dehighlight_utils.py
+index 9b52368..a8106e1 100644
+--- a/hy3dgen/texgen/utils/dehighlight_utils.py
++++ b/hy3dgen/texgen/utils/dehighlight_utils.py
+@@ -80,11 +80,11 @@ class Light_Shadow_Remover():
+             image_array[:, :, 3] = alpha_channel
+             image = Image.fromarray(image_array)
+ 
+-            image_tensor = torch.tensor(np.array(image) / 255.0).to(self.device)
++            image_tensor = torch.tensor(np.array(image) / 255.0, dtype=torch.float32).to(self.device)
+             alpha = image_tensor[:, :, 3:]
+             rgb_target = image_tensor[:, :, :3]
+         else:
+-            image_tensor = torch.tensor(np.array(image) / 255.0).to(self.device)
++            image_tensor = torch.tensor(np.array(image) / 255.0, dtype=torch.float32).to(self.device)
+             alpha = torch.ones_like(image_tensor)[:, :, :1]
+             rgb_target = image_tensor[:, :, :3]
+ 
+@@ -101,7 +101,7 @@ class Light_Shadow_Remover():
+             guidance_scale=self.cfg_text,
+         ).images[0]
+ 
+-        image_tensor = torch.tensor(np.array(image)/255.0).to(self.device)
++        image_tensor = torch.tensor(np.array(image)/255.0, dtype=torch.float32).to(self.device)
+         rgb_src = image_tensor[:,:,:3]
+         image = self.recorrect_rgb(rgb_src, rgb_target, alpha)
+         image = image[:,:,:3]*image[:,:,3:] + torch.ones_like(image[:,:,:3])*(1.0-image[:,:,3:])
+diff --git a/hy3dgen/texgen/utils/multiview_utils.py b/hy3dgen/texgen/utils/multiview_utils.py
+index 4d6a6ba..3f3d055 100644
+--- a/hy3dgen/texgen/utils/multiview_utils.py
++++ b/hy3dgen/texgen/utils/multiview_utils.py
+@@ -33,7 +33,7 @@ class Multiview_Diffusion_Net():
+ 
+         pipeline = DiffusionPipeline.from_pretrained(
+             multiview_ckpt_path,
+-            custom_pipeline=custom_pipeline_path, torch_dtype=torch.float16)
++            custom_pipeline=custom_pipeline_path, torch_dtype=torch.float16, trust_remote_code=True)
+ 
+         if config.pipe_name in ['hunyuanpaint']:
+             pipeline.scheduler = EulerAncestralDiscreteScheduler.from_config(pipeline.scheduler.config,

@@ -1,0 +1,387 @@
+diff --git a/hy3dpaint/DifferentiableRenderer/MeshRender.py b/hy3dpaint/DifferentiableRenderer/MeshRender.py
+index 83c8cf8..31e5243 100644
+--- a/hy3dpaint/DifferentiableRenderer/MeshRender.py
++++ b/hy3dpaint/DifferentiableRenderer/MeshRender.py
+@@ -826,9 +826,10 @@ class MeshRender:
+         Returns:
+             Tuple of (vertex_positions, face_indices, uv_coordinates, uv_indices)
+         """
+-        vtx_pos = self.vtx_pos.cpu().numpy()
++        # .copy(): on a CPU device .numpy() shares memory, and the in-place transforms below would change the mesh
++        vtx_pos = self.vtx_pos.cpu().numpy().copy()
+         pos_idx = self.pos_idx.cpu().numpy()
+-        vtx_uv = self.vtx_uv.cpu().numpy()
++        vtx_uv = self.vtx_uv.cpu().numpy().copy()
+         uv_idx = self.uv_idx.cpu().numpy()
+ 
+         # 坐标变换的逆变换
+diff --git a/hy3dpaint/DifferentiableRenderer/mesh_utils.py b/hy3dpaint/DifferentiableRenderer/mesh_utils.py
+index 5b3e831..e29a06f 100644
+--- a/hy3dpaint/DifferentiableRenderer/mesh_utils.py
++++ b/hy3dpaint/DifferentiableRenderer/mesh_utils.py
+@@ -14,7 +14,10 @@
+ 
+ import os
+ import cv2
+-import bpy
++try:
++    import bpy  # only needed by convert_obj_to_glb (Blender); absent on macOS installs
++except ImportError:
++    bpy = None
+ import math
+ import numpy as np
+ from io import StringIO
+diff --git a/hy3dpaint/custom_rasterizer/lib/custom_rasterizer_kernel/__init__.py b/hy3dpaint/custom_rasterizer/lib/custom_rasterizer_kernel/__init__.py
+index e69de29..1614ff8 100644
+--- a/hy3dpaint/custom_rasterizer/lib/custom_rasterizer_kernel/__init__.py
++++ b/hy3dpaint/custom_rasterizer/lib/custom_rasterizer_kernel/__init__.py
+@@ -0,0 +1,13 @@
++# Hunyuan 3D is licensed under the TENCENT HUNYUAN NON-COMMERCIAL LICENSE AGREEMENT
++# except for the third-party components listed below.
++# Hunyuan 3D does not impose any additional limitations beyond what is outlined
++# in the repsective licenses of these third-party components.
++# Users must comply with all terms and conditions of original licenses of these third-party
++# components and must ensure that the usage of the third party components adheres to
++# all relevant laws and regulations.
++
++# For avoidance of doubts, Hunyuan 3D means the large language models and
++# their software and algorithms, including trained model weights, parameters (including
++# optimizer states), machine-learning model code, inference-enabling code, training-enabling code,
++# fine-tuning enabling code and other elements of the foregoing made publicly available
++# by Tencent in accordance with TENCENT HUNYUAN COMMUNITY LICENSE AGREEMENT.
+diff --git a/hy3dpaint/custom_rasterizer/lib/custom_rasterizer_kernel/grid_neighbor.cpp b/hy3dpaint/custom_rasterizer/lib/custom_rasterizer_kernel/grid_neighbor.cpp
+index f02bcba..65ab321 100644
+--- a/hy3dpaint/custom_rasterizer/lib/custom_rasterizer_kernel/grid_neighbor.cpp
++++ b/hy3dpaint/custom_rasterizer/lib/custom_rasterizer_kernel/grid_neighbor.cpp
+@@ -394,8 +394,8 @@ std::vector<std::vector<torch::Tensor>> build_hierarchy(std::vector<torch::Tenso
+     std::vector<torch::Tensor> grid_evencorners(grids.size());
+     std::vector<torch::Tensor> grid_oddcorners(grids.size());
+ 
+-    texture_positions[0] = torch::zeros({seq2pos.size() / 3, 3}, float_options);
+-    texture_positions[1] = torch::zeros({seq2pos.size() / 3}, float_options);
++    texture_positions[0] = torch::zeros({static_cast<int64_t>(seq2pos.size() / 3), static_cast<int64_t>(3)}, float_options);
++    texture_positions[1] = torch::zeros({static_cast<int64_t>(seq2pos.size() / 3)}, float_options);
+     float* positions_out_ptr = texture_positions[0].data_ptr<float>();
+     memcpy(positions_out_ptr, seq2pos.data(), sizeof(float) * seq2pos.size());
+     positions_out_ptr = texture_positions[1].data_ptr<float>();
+@@ -404,25 +404,25 @@ std::vector<std::vector<torch::Tensor>> build_hierarchy(std::vector<torch::Tenso
+     }
+ 
+     for (int i = 0; i < grids.size(); ++i) {
+-        grid_neighbors[i] = torch::zeros({grids[i].seq2grid.size(), 9}, int64_options);
+-        long* nptr = grid_neighbors[i].data_ptr<long>();
++        grid_neighbors[i] = torch::zeros({static_cast<int64_t>(grids[i].seq2grid.size()), static_cast<int64_t>(9)}, int64_options);
++        int64_t* nptr = grid_neighbors[i].data_ptr<int64_t>();
+         for (int j = 0; j < grids[i].seq2neighbor.size(); ++j) {
+             nptr[j] = grids[i].seq2neighbor[j];
+         }
+ 
+-        grid_evencorners[i] = torch::zeros({grids[i].seq2evencorner.size()}, int64_options);
+-        grid_oddcorners[i] = torch::zeros({grids[i].seq2oddcorner.size()}, int64_options);
+-        long* dptr = grid_evencorners[i].data_ptr<long>();
++        grid_evencorners[i] = torch::zeros({static_cast<int64_t>(grids[i].seq2evencorner.size())}, int64_options);
++        grid_oddcorners[i] = torch::zeros({static_cast<int64_t>(grids[i].seq2oddcorner.size())}, int64_options);
++        int64_t* dptr = grid_evencorners[i].data_ptr<int64_t>();
+         for (int j = 0; j < grids[i].seq2evencorner.size(); ++j) {
+             dptr[j] = grids[i].seq2evencorner[j];
+         }
+-        dptr = grid_oddcorners[i].data_ptr<long>();
++        dptr = grid_oddcorners[i].data_ptr<int64_t>();
+         for (int j = 0; j < grids[i].seq2oddcorner.size(); ++j) {
+             dptr[j] = grids[i].seq2oddcorner[j];
+         }            
+         if (i + 1 < grids.size()) {
+-            grid_downsamples[i] = torch::zeros({grids[i].downsample_seq.size()}, int64_options);
+-            long* dptr = grid_downsamples[i].data_ptr<long>();
++            grid_downsamples[i] = torch::zeros({static_cast<int64_t>(grids[i].downsample_seq.size())}, int64_options);
++            int64_t* dptr = grid_downsamples[i].data_ptr<int64_t>();
+             for (int j = 0; j < grids[i].downsample_seq.size(); ++j) {
+                 dptr[j] = grids[i].downsample_seq[j];
+             }
+@@ -534,9 +534,9 @@ std::vector<std::vector<torch::Tensor>> build_hierarchy_with_feat(
+     std::vector<torch::Tensor> grid_evencorners(grids.size());
+     std::vector<torch::Tensor> grid_oddcorners(grids.size());
+ 
+-    texture_positions[0] = torch::zeros({seq2pos.size() / 3, 3}, float_options);
+-    texture_positions[1] = torch::zeros({seq2pos.size() / 3}, float_options);
+-    texture_feats[0] = torch::zeros({seq2feat.size() / feat_channel, feat_channel}, float_options);
++    texture_positions[0] = torch::zeros({static_cast<int64_t>(seq2pos.size() / 3), static_cast<int64_t>(3)}, float_options);
++    texture_positions[1] = torch::zeros({static_cast<int64_t>(seq2pos.size() / 3)}, float_options);
++    texture_feats[0] = torch::zeros({static_cast<int64_t>(seq2feat.size() / feat_channel), static_cast<int64_t>(feat_channel)}, float_options);
+     float* positions_out_ptr = texture_positions[0].data_ptr<float>();
+     memcpy(positions_out_ptr, seq2pos.data(), sizeof(float) * seq2pos.size());
+     positions_out_ptr = texture_positions[1].data_ptr<float>();
+@@ -547,24 +547,24 @@ std::vector<std::vector<torch::Tensor>> build_hierarchy_with_feat(
+     memcpy(feats_out_ptr, seq2feat.data(), sizeof(float) * seq2feat.size());
+ 
+     for (int i = 0; i < grids.size(); ++i) {
+-        grid_neighbors[i] = torch::zeros({grids[i].seq2grid.size(), 9}, int64_options);
+-        long* nptr = grid_neighbors[i].data_ptr<long>();
++        grid_neighbors[i] = torch::zeros({static_cast<int64_t>(grids[i].seq2grid.size()), static_cast<int64_t>(9)}, int64_options);
++        int64_t* nptr = grid_neighbors[i].data_ptr<int64_t>();
+         for (int j = 0; j < grids[i].seq2neighbor.size(); ++j) {
+             nptr[j] = grids[i].seq2neighbor[j];
+         }
+-        grid_evencorners[i] = torch::zeros({grids[i].seq2evencorner.size()}, int64_options);
+-        grid_oddcorners[i] = torch::zeros({grids[i].seq2oddcorner.size()}, int64_options);
+-        long* dptr = grid_evencorners[i].data_ptr<long>();
++        grid_evencorners[i] = torch::zeros({static_cast<int64_t>(grids[i].seq2evencorner.size())}, int64_options);
++        grid_oddcorners[i] = torch::zeros({static_cast<int64_t>(grids[i].seq2oddcorner.size())}, int64_options);
++        int64_t* dptr = grid_evencorners[i].data_ptr<int64_t>();
+         for (int j = 0; j < grids[i].seq2evencorner.size(); ++j) {
+             dptr[j] = grids[i].seq2evencorner[j];
+         }
+-        dptr = grid_oddcorners[i].data_ptr<long>();
++        dptr = grid_oddcorners[i].data_ptr<int64_t>();
+         for (int j = 0; j < grids[i].seq2oddcorner.size(); ++j) {
+             dptr[j] = grids[i].seq2oddcorner[j];
+         }
+         if (i + 1 < grids.size()) {
+-            grid_downsamples[i] = torch::zeros({grids[i].downsample_seq.size()}, int64_options);
+-            long* dptr = grid_downsamples[i].data_ptr<long>();
++            grid_downsamples[i] = torch::zeros({static_cast<int64_t>(grids[i].downsample_seq.size())}, int64_options);
++            int64_t* dptr = grid_downsamples[i].data_ptr<int64_t>();
+             for (int j = 0; j < grids[i].downsample_seq.size(); ++j) {
+                 dptr[j] = grids[i].downsample_seq[j];
+             }
+diff --git a/hy3dpaint/custom_rasterizer/lib/custom_rasterizer_kernel/rasterizer.cpp b/hy3dpaint/custom_rasterizer/lib/custom_rasterizer_kernel/rasterizer.cpp
+index b3ff69f..b3d8ceb 100644
+--- a/hy3dpaint/custom_rasterizer/lib/custom_rasterizer_kernel/rasterizer.cpp
++++ b/hy3dpaint/custom_rasterizer/lib/custom_rasterizer_kernel/rasterizer.cpp
+@@ -12,7 +12,7 @@ void rasterizeTriangleCPU(int idx, float* vt0, float* vt1, float* vt2, int width
+         for (int py = y_min; py < y_max + 1; ++py) {
+             if (py < 0 || py >= height)
+                 continue;
+-            float vt[2] = {px + 0.5, py + 0.5};
++            float vt[2] = {px + 0.5f, py + 0.5f};
+             float baryCentricCoordinate[3];
+             calculateBarycentricCoordinate(vt0, vt1, vt2, vt, baryCentricCoordinate);
+             if (isBarycentricCoordInBounds(baryCentricCoordinate)) {
+@@ -100,24 +100,24 @@ std::vector<torch::Tensor> rasterize_image_cpu(torch::Tensor V, torch::Tensor F,
+     auto INT64_options = torch::TensorOptions().dtype(torch::kInt64).requires_grad(false);
+     auto findices = torch::zeros({height, width}, options);
+     INT64 maxint = (INT64)MAXINT * (INT64)MAXINT + (MAXINT - 1);
+-    auto z_min = torch::ones({height, width}, INT64_options) * (long)maxint;
++    auto z_min = torch::ones({height, width}, INT64_options) * (int64_t)maxint;
+ 
+     if (!use_depth_prior) {
+         for (int i = 0; i < num_faces; ++i) {
+             rasterizeImagecoordsKernelCPU(V.data_ptr<float>(), F.data_ptr<int>(), 0,
+-                (INT64*)z_min.data_ptr<long>(), occlusion_truncation, width, height, num_vertices, num_faces, i); 
++                (INT64*)z_min.data_ptr<int64_t>(), occlusion_truncation, width, height, num_vertices, num_faces, i); 
+         }
+     } else {
+         for (int i = 0; i < num_faces; ++i)
+             rasterizeImagecoordsKernelCPU(V.data_ptr<float>(), F.data_ptr<int>(), D.data_ptr<float>(),
+-                (INT64*)z_min.data_ptr<long>(), occlusion_truncation, width, height, num_vertices, num_faces, i);
++                (INT64*)z_min.data_ptr<int64_t>(), occlusion_truncation, width, height, num_vertices, num_faces, i);
+     }
+ 
+     auto float_options = torch::TensorOptions().dtype(torch::kFloat32).requires_grad(false);
+     auto barycentric = torch::zeros({height, width, 3}, float_options);
+     for (int i = 0; i < width * height; ++i)
+         barycentricFromImgcoordCPU(V.data_ptr<float>(), F.data_ptr<int>(),
+-            findices.data_ptr<int>(), (INT64*)z_min.data_ptr<long>(), width, height, num_vertices, num_faces, barycentric.data_ptr<float>(), i);
++            findices.data_ptr<int>(), (INT64*)z_min.data_ptr<int64_t>(), width, height, num_vertices, num_faces, barycentric.data_ptr<float>(), i);
+ 
+     return {findices, barycentric};
+ }
+@@ -128,8 +128,13 @@ std::vector<torch::Tensor> rasterize_image(torch::Tensor V, torch::Tensor F, tor
+     int device_id = V.get_device();
+     if (device_id == -1)
+         return rasterize_image_cpu(V, F, D, width, height, occlusion_truncation, use_depth_prior);
++#ifdef CPU_ONLY
++    TORCH_CHECK(false, "custom_rasterizer was built without CUDA: pass CPU tensors");
++    return {};
++#else
+     else
+         return rasterize_image_gpu(V, F, D, width, height, occlusion_truncation, use_depth_prior);
++#endif
+ }
+ 
+ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+diff --git a/hy3dpaint/custom_rasterizer/lib/custom_rasterizer_kernel/rasterizer.h b/hy3dpaint/custom_rasterizer/lib/custom_rasterizer_kernel/rasterizer.h
+index cf4f987..21231ff 100644
+--- a/hy3dpaint/custom_rasterizer/lib/custom_rasterizer_kernel/rasterizer.h
++++ b/hy3dpaint/custom_rasterizer/lib/custom_rasterizer_kernel/rasterizer.h
+@@ -4,7 +4,12 @@
+ #include <torch/extension.h>
+ #include <vector>
+ #include <ATen/ATen.h>
++#ifdef CPU_ONLY
++#define __host__
++#define __device__
++#else
+ #include <ATen/cuda/CUDAContext.h> // For CUDA context
++#endif
+ 
+ #define INT64 unsigned long long
+ #define MAXINT 2147483647
+diff --git a/hy3dpaint/custom_rasterizer/lib/custom_rasterizer_kernel/rasterizer_gpu.cu b/hy3dpaint/custom_rasterizer/lib/custom_rasterizer_kernel/rasterizer_gpu.cu
+index 709c1b8..cc6f354 100644
+--- a/hy3dpaint/custom_rasterizer/lib/custom_rasterizer_kernel/rasterizer_gpu.cu
++++ b/hy3dpaint/custom_rasterizer/lib/custom_rasterizer_kernel/rasterizer_gpu.cu
+@@ -108,20 +108,20 @@ std::vector<torch::Tensor> rasterize_image_gpu(torch::Tensor V, torch::Tensor F,
+     auto INT64_options = torch::TensorOptions().dtype(torch::kInt64).device(torch::kCUDA, device_id).requires_grad(false);
+     auto findices = torch::zeros({height, width}, options);
+     INT64 maxint = (INT64)MAXINT * (INT64)MAXINT + (MAXINT - 1);
+-    auto z_min = torch::ones({height, width}, INT64_options) * (long)maxint;
++    auto z_min = torch::ones({height, width}, INT64_options) * (int64_t)maxint;
+ 
+     if (!use_depth_prior) {
+         rasterizeImagecoordsKernelGPU<<<(num_faces+255)/256,256,0,at::cuda::getCurrentCUDAStream()>>>(V.data_ptr<float>(), F.data_ptr<int>(), 0,
+-            (INT64*)z_min.data_ptr<long>(), occlusion_truncation, width, height, num_vertices, num_faces); 
++            (INT64*)z_min.data_ptr<int64_t>(), occlusion_truncation, width, height, num_vertices, num_faces); 
+     } else {
+         rasterizeImagecoordsKernelGPU<<<(num_faces+255)/256,256,0,at::cuda::getCurrentCUDAStream()>>>(V.data_ptr<float>(), F.data_ptr<int>(), D.data_ptr<float>(),
+-            (INT64*)z_min.data_ptr<long>(), occlusion_truncation, width, height, num_vertices, num_faces); 
++            (INT64*)z_min.data_ptr<int64_t>(), occlusion_truncation, width, height, num_vertices, num_faces); 
+     }
+ 
+     auto float_options = torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA, device_id).requires_grad(false);
+     auto barycentric = torch::zeros({height, width, 3}, float_options);
+     barycentricFromImgcoordGPU<<<(width * height + 255)/256, 256>>>(V.data_ptr<float>(), F.data_ptr<int>(),
+-        findices.data_ptr<int>(), (INT64*)z_min.data_ptr<long>(), width, height, num_vertices, num_faces, barycentric.data_ptr<float>());
++        findices.data_ptr<int>(), (INT64*)z_min.data_ptr<int64_t>(), width, height, num_vertices, num_faces, barycentric.data_ptr<float>());
+ 
+     return {findices, barycentric};
+ }
+diff --git a/hy3dpaint/custom_rasterizer/setup.py b/hy3dpaint/custom_rasterizer/setup.py
+index 15192e9..84e5b60 100644
+--- a/hy3dpaint/custom_rasterizer/setup.py
++++ b/hy3dpaint/custom_rasterizer/setup.py
+@@ -14,18 +14,29 @@
+ 
+ from setuptools import setup, find_packages
+ import torch
+-from torch.utils.cpp_extension import BuildExtension, CUDAExtension, CppExtension
++from torch.utils.cpp_extension import CUDA_HOME, BuildExtension, CUDAExtension, CppExtension
+ 
+ # build custom rasterizer
++# nvcc is needed for the CUDA kernel; without a CUDA toolkit (e.g. macOS) a CPU-only kernel is built
+ 
+-custom_rasterizer_module = CUDAExtension(
+-    "custom_rasterizer_kernel",
+-    [
+-        "lib/custom_rasterizer_kernel/rasterizer.cpp",
+-        "lib/custom_rasterizer_kernel/grid_neighbor.cpp",
+-        "lib/custom_rasterizer_kernel/rasterizer_gpu.cu",
+-    ],
+-)
++if CUDA_HOME is not None:
++    custom_rasterizer_module = CUDAExtension(
++        "custom_rasterizer_kernel",
++        [
++            "lib/custom_rasterizer_kernel/rasterizer.cpp",
++            "lib/custom_rasterizer_kernel/grid_neighbor.cpp",
++            "lib/custom_rasterizer_kernel/rasterizer_gpu.cu",
++        ],
++    )
++else:
++    custom_rasterizer_module = CppExtension(
++        "custom_rasterizer_kernel",
++        [
++            "lib/custom_rasterizer_kernel/rasterizer.cpp",
++            "lib/custom_rasterizer_kernel/grid_neighbor.cpp",
++        ],
++        define_macros=[("CPU_ONLY", None)],
++    )
+ 
+ setup(
+     packages=find_packages(),
+diff --git a/hy3dpaint/hunyuanpaintpbr/pipeline.py b/hy3dpaint/hunyuanpaintpbr/pipeline.py
+index 871dae5..483d2d0 100644
+--- a/hy3dpaint/hunyuanpaintpbr/pipeline.py
++++ b/hy3dpaint/hunyuanpaintpbr/pipeline.py
+@@ -242,7 +242,7 @@ class HunyuanPaintPipeline(StableDiffusionPipeline):
+                     if img.shape[2] > 3:
+                         alpha = img[:, :, 3:]
+                         img = img[:, :, :3] * alpha + bg_c * (1 - alpha)
+-                    img = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).contiguous().half().to("cuda")
++                    img = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).contiguous().half().to(self.device)
+                     view_imgs.append(img)
+                 view_imgs = torch.cat(view_imgs, dim=0)
+                 images_tensor.append(view_imgs.unsqueeze(0))
+diff --git a/hy3dpaint/hunyuanpaintpbr/unet/attn_processor.py b/hy3dpaint/hunyuanpaintpbr/unet/attn_processor.py
+index 37ebde0..82c7da7 100644
+--- a/hy3dpaint/hunyuanpaintpbr/unet/attn_processor.py
++++ b/hy3dpaint/hunyuanpaintpbr/unet/attn_processor.py
+@@ -542,13 +542,30 @@ class AttnCore:
+             query, key = apply_rope_fn(query, key, head_dim, **kwargs)
+ 
+         # Compute attention
+-        hidden_states = F.scaled_dot_product_attention(
+-            query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
+-        )
++        hidden_states = chunked_sdpa(query, key, value, attention_mask)
+ 
+         return hidden_states, residual, input_ndim, shape_info, batch_size, attn.heads, head_dim
+ 
+ 
++def chunked_sdpa(query, key, value, attn_mask=None, max_bytes=1 << 30):
++    """scaled_dot_product_attention in query chunks off CUDA. MPS has no memory-efficient kernel and
++    materializes the full score matrix (21 GiB for 9 views at 768px); rows are independent, so the result
++    is identical."""
++    if query.device.type == "cuda":
++        return F.scaled_dot_product_attention(query, key, value, attn_mask=attn_mask, dropout_p=0.0, is_causal=False)
++    q_len = query.shape[-2]
++    rows = max(1, max_bytes // (query.shape[0] * query.shape[1] * key.shape[-2] * query.element_size()))
++    if rows >= q_len:
++        return F.scaled_dot_product_attention(query, key, value, attn_mask=attn_mask, dropout_p=0.0, is_causal=False)
++    out = []
++    for i in range(0, q_len, rows):
++        mask = attn_mask
++        if mask is not None and mask.dim() >= 2 and mask.shape[-2] == q_len:
++            mask = mask[..., i : i + rows, :]
++        out.append(F.scaled_dot_product_attention(query[..., i : i + rows, :], key, value, attn_mask=mask, dropout_p=0.0))
++    return torch.cat(out, dim=-2)
++
++
+ # Specific processor implementations (minimal unique code)
+ class PoseRoPEAttnProcessor2_0:
+     """
+@@ -747,7 +764,7 @@ class SelfAttnProcessor2_0(BaseAttnProcessor):
+         # Process each PBR setting
+         results = []
+         for token, pbr_hs in zip(self.pbr_setting, pbr_hidden_states):
+-            processed_hs = rearrange(pbr_hs, "b n_pbrs n l c -> (b n_pbrs n) l c").to("cuda:0")
++            processed_hs = rearrange(pbr_hs, "b n_pbrs n l c -> (b n_pbrs n) l c")
+             result = self.process_single(attn, processed_hs, None, attention_mask, temb, token, False)
+             results.append(result)
+ 
+diff --git a/hy3dpaint/textureGenPipeline.py b/hy3dpaint/textureGenPipeline.py
+index a582892..78bbfac 100644
+--- a/hy3dpaint/textureGenPipeline.py
++++ b/hy3dpaint/textureGenPipeline.py
+@@ -35,8 +35,8 @@ diffusers_logging.set_verbosity(50)
+ 
+ 
+ class Hunyuan3DPaintConfig:
+-    def __init__(self, max_num_view, resolution):
+-        self.device = "cuda"
++    def __init__(self, max_num_view, resolution, device="cuda"):
++        self.device = device
+ 
+         self.multiview_cfg_path = "hy3dpaint/cfgs/hunyuan-paint-pbr.yaml"
+         self.custom_pipeline = "hunyuanpaintpbr"
+@@ -79,6 +79,8 @@ class Hunyuan3DPaintPipeline:
+             texture_size=self.config.texture_size,
+             bake_mode=self.config.bake_mode,
+             raster_mode=self.config.raster_mode,
++            # custom_rasterizer only has CUDA and CPU kernels: render on CPU for other devices (e.g. mps)
++            device=self.config.device if str(self.config.device).startswith("cuda") else "cpu",
+         )
+         self.view_processor = ViewProcessor(self.config, self.render)
+         self.load_models()
+diff --git a/hy3dpaint/utils/image_super_utils.py b/hy3dpaint/utils/image_super_utils.py
+index 8d56d4f..4349345 100644
+--- a/hy3dpaint/utils/image_super_utils.py
++++ b/hy3dpaint/utils/image_super_utils.py
+@@ -31,6 +31,7 @@ class imageSuperNet:
+             tile_pad=10,
+             pre_pad=0,
+             half=True,
++            device=getattr(config, "device", None),
+             gpu_id=None,
+         )
+         self.upsampler = upsampler
