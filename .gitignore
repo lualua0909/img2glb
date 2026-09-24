@@ -3,9 +3,7 @@
 *.log
 *.pid
 
-# --- Upstream Hunyuan3D-2 / 2.1 repos (cloned separately, have their own .git; see docs/adr) ---
-/Hunyuan3D-2/
-/Hunyuan3D-2.1/
+# --- Upstream Hunyuan3D-2 / 2.1 repos (git submodules; see docs/adr, worker/*/setup*.sh) ---
 
 # --- Generated 3D artifacts at root ---
 /*.glb

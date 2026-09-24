@@ -6,7 +6,9 @@ cd "$(dirname "$0")/.."
 HY="${HY3D_REPO:-../Hunyuan3D-2}"
 PATCH="$PWD/mac/hunyuan3d-mps.patch"
 
-[ -d "$HY" ] || git clone https://github.com/Tencent-Hunyuan/Hunyuan3D-2.git "$HY"
+if [ ! -e "$HY/.git" ]; then
+  git -C .. submodule update --init -- "$(basename "$HY")" 2>/dev/null || git clone https://github.com/Tencent-Hunyuan/Hunyuan3D-2.git "$HY"
+fi
 if git -C "$HY" apply --reverse --check "$PATCH" 2>/dev/null; then
   echo "macOS patch already applied"
 else

@@ -8,7 +8,9 @@ HY="${HY21_REPO:-../Hunyuan3D-2.1}"
 PATCH="$PWD/mac/hunyuan3d-2.1-mps.patch"
 PY=.venv21/bin/python
 
-[ -d "$HY" ] || git clone https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1.git "$HY"
+if [ ! -e "$HY/.git" ]; then
+  git -C .. submodule update --init -- "$(basename "$HY")" 2>/dev/null || git clone https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1.git "$HY"
+fi
 if git -C "$HY" apply --reverse --check "$PATCH" 2>/dev/null; then
   echo "macOS patch already applied"
 else

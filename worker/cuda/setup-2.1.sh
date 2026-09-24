@@ -11,7 +11,9 @@ TORCH_INDEX="${TORCH_INDEX:-https://download.pytorch.org/whl/cu128}"
 
 command -v nvidia-smi >/dev/null || { echo "No NVIDIA GPU (nvidia-smi not found): on a Mac use mac/setup-2.1.sh" >&2; exit 1; }
 command -v nvcc >/dev/null || { echo "nvcc not found: install the CUDA toolkit (custom_rasterizer is a CUDA extension)" >&2; exit 1; }
-[ -d "$HY" ] || git clone https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1.git "$HY"
+if [ ! -e "$HY/.git" ]; then
+  git -C .. submodule update --init -- "$(basename "$HY")" 2>/dev/null || git clone https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1.git "$HY"
+fi
 if git -C "$HY" apply --reverse --check "$PATCH" 2>/dev/null; then
   echo "device patch already applied"
 else
