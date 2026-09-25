@@ -55,10 +55,10 @@ export function PaintEditor({
 
     (async () => {
       const THREE = await import("three");
-      const { GLTFLoader } = await import("three/examples/jsm/loaders/GLTFLoader.js");
+      const { gltfLoader } = await import("@/lib/gltf-loader");
       const { GLTFExporter } = await import("three/examples/jsm/exporters/GLTFExporter.js");
       const { OrbitControls } = await import("three/examples/jsm/controls/OrbitControls.js");
-      const gltf = await new GLTFLoader().loadAsync(gen.modelUrl!);
+      const gltf = await gltfLoader().loadAsync(gen.modelUrl!);
       if (disposed) return;
 
       const meshes: Mesh[] = [];

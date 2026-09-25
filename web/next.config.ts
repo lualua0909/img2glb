@@ -11,6 +11,7 @@ const securityHeaders = [
 const nextConfig: NextConfig = {
   output: "standalone",
   poweredByHeader: false,
+  serverExternalPackages: ["draco3dgltf"], // loads its .wasm from its own folder at runtime
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },

@@ -49,6 +49,7 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { countMeshGeometry } from "@/lib/mesh-stats";
 import { useI18n } from "./i18n-provider";
 
 export type ViewMode = "textured" | "clay" | "wireframe" | "normals" | "uv" | "rig";
@@ -79,6 +80,7 @@ const VIEW_DIRS: Record<CameraView, [number, number, number]> = {
 
 type Stats = {
   vertices: number;
+  bufferVertices: number;
   triangles: number;
   meshes: number;
   materials: number;
@@ -119,9 +121,6 @@ type Engine = {
   resetPlay(): void;
   onPlayState(cb: (a: PlayAction) => void): () => void;
 };
-
-const compact = (n: number) =>
-  n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : String(n);
 
 /** Colored, labelled grid for checking UV layout and texel stretching. */
 function uvCheckerCanvas() {
@@ -285,7 +284,7 @@ export function ModelInspector({
   /** Persists an edited model (binary GLB); the saved copy comes back as a new `src`. */
   onSaveModel: (glb: ArrayBuffer) => Promise<void>;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const tv = t.viewer;
   const root = useRef<HTMLDivElement>(null);
   const mount = useRef<HTMLDivElement>(null);
@@ -321,11 +320,11 @@ export function ModelInspector({
 
     (async () => {
       const THREE = await import("three");
-      const { GLTFLoader } = await import("three/examples/jsm/loaders/GLTFLoader.js");
+      const { gltfLoader } = await import("@/lib/gltf-loader");
       const { OrbitControls } = await import("three/examples/jsm/controls/OrbitControls.js");
       const { RoomEnvironment } = await import("three/examples/jsm/environments/RoomEnvironment.js");
       const { GLTFExporter } = await import("three/examples/jsm/exporters/GLTFExporter.js");
-      const gltf = await new GLTFLoader().loadAsync(src);
+      const gltf = await gltfLoader().loadAsync(src);
       if (disposed) return;
       const model = gltf.scene;
 
@@ -352,8 +351,7 @@ export function ModelInspector({
       const materials = new Set<Material>();
       const textures = new Set<Texture>();
       const bones = new Set<string>();
-      let vertices = 0;
-      let triangles = 0;
+      const geometryStats = countMeshGeometry(meshes);
       let hasUv = false;
       let hasVertexColors = false;
       for (const m of meshes) {
@@ -361,9 +359,6 @@ export function ModelInspector({
         if (!g.getAttribute("normal")) g.computeVertexNormals();
         m.castShadow = true;
         original.set(m, m.material);
-        const count = g.getAttribute("position").count;
-        vertices += count;
-        triangles += (g.index ? g.index.count : count) / 3;
         hasUv ||= Boolean(g.getAttribute("uv"));
         hasVertexColors ||= Boolean(g.getAttribute("color"));
         for (const mat of Array.isArray(m.material) ? m.material : [m.material]) {
@@ -386,8 +381,7 @@ export function ModelInspector({
       mover.add(model);
       scene.add(pivot);
       setStats({
-        vertices,
-        triangles: Math.round(triangles),
+        ...geometryStats,
         meshes: meshes.length,
         materials: materials.size,
         textures: textures.size,
@@ -524,18 +518,47 @@ export function ModelInspector({
       };
       const RUN_AFTER_MS = 450;
       const TAP_MS = 260;
-      const WALK_SPEED = radius * 1.2;
+      const WALK_SPEED = radius * 1.6;
       const RUN_SPEED = radius * 3.1;
+      const TAP_STEP = radius * 0.5;
       const LIMIT = radius * 2.4;
       const JUMP_H = radius * 0.6;
       const JUMP_T = 0.65;
       const JUMP_V0 = (4 * JUMP_H) / JUMP_T;
       const JUMP_G = (8 * JUMP_H) / (JUMP_T * JUMP_T);
-      const DIR_VEC: Record<PlayDir, [number, number]> = {
-        up: [0, -1],
-        down: [0, 1],
-        left: [-1, 0],
-        right: [1, 0],
+      // Camera-relative movement: "up" is always straight ahead on screen, whichever way the camera orbits.
+      const UP_Y = new THREE.Vector3(0, 1, 0);
+      const camFlat = new THREE.Vector3();
+      const camRight = new THREE.Vector3();
+      const moveVec = new THREE.Vector3();
+      const tapVec = new THREE.Vector3();
+      const camForward = (out: Vector3) => {
+        out.copy(controls.target).sub(camera.position);
+        out.y = 0;
+        if (out.lengthSq() < 1e-8) out.set(0, 0, -1);
+        else out.normalize();
+        return out;
+      };
+      /** Combined world-space direction of all held D-pad buttons (zero vector = no input). */
+      const inputVec = (out: Vector3) => {
+        out.set(0, 0, 0);
+        if (play.dirs.size === 0) return out;
+        camForward(camFlat);
+        camRight.crossVectors(camFlat, UP_Y).normalize();
+        if (play.dirs.has("up")) out.add(camFlat);
+        if (play.dirs.has("down")) out.sub(camFlat);
+        if (play.dirs.has("right")) out.add(camRight);
+        if (play.dirs.has("left")) out.sub(camRight);
+        return out;
+      };
+      /** World-space direction of a single D-pad button under the current camera. */
+      const dirVec = (dir: PlayDir, out: Vector3) => {
+        camForward(camFlat);
+        camRight.crossVectors(camFlat, UP_Y).normalize();
+        if (dir === "up") return out.copy(camFlat);
+        if (dir === "down") return out.copy(camFlat).negate();
+        if (dir === "right") return out.copy(camRight);
+        return out.copy(camRight).negate();
       };
       const animNames = gltf.animations.map((a) => a.name);
       const findClip = (re: RegExp) => animNames.findIndex((n) => re.test(n));
@@ -554,7 +577,21 @@ export function ModelInspector({
       const jumpClipIdx = idxJump;
       const attackClipIdx = idxAttack >= 0 ? idxAttack : idxHit;
       const deathClipIdx = idxDeath >= 0 ? idxDeath : idxHit >= 0 ? idxHit : idxFall;
-      const tmpTarget = new THREE.Vector3();
+      // Rigid camera follow: the camera travels the exact distance the character does,
+      // so angle and distance stay fixed and the character can never walk into the camera.
+      let prevFX = 0;
+      let prevFZ = 0;
+      const followCamera = () => {
+        const dx = play.x - prevFX;
+        const dz = play.z - prevFZ;
+        prevFX = play.x;
+        prevFZ = play.z;
+        if (dx !== 0 || dz !== 0) {
+          camera.position.x += dx;
+          camera.position.z += dz;
+          controls.target.set(center.x + play.x, controls.target.y, center.z + play.z);
+        }
+      };
       const emitAction = (a: PlayAction) => {
         if (play.action === a) return;
         play.action = a;
@@ -588,26 +625,11 @@ export function ModelInspector({
         }
         emitAction("idle");
       };
-      const angleLerp = (a: number, b: number, t: number) => {
-        let d = (b - a) % (Math.PI * 2);
-        if (d > Math.PI) d -= Math.PI * 2;
-        if (d < -Math.PI) d += Math.PI * 2;
-        return a + d * t;
-      };
       const focusOf = (out: Vector3) => out.set(center.x + play.x, center.y, center.z + play.z);
       const playTick = (dt: number, now: number) => {
         if (!play.on) return;
-        // The camera gently follows the character so it never walks out of view.
-        tmpTarget.set(center.x + play.x, center.y, center.z + play.z);
-        controls.target.lerp(tmpTarget, 1 - Math.exp(-4 * dt));
-        let ix = 0;
-        let iz = 0;
-        play.dirs.forEach((d) => {
-          const [vx, vz] = DIR_VEC[d];
-          ix += vx;
-          iz += vz;
-        });
-        const hasInput = ix !== 0 || iz !== 0;
+        inputVec(moveVec);
+        const hasInput = moveVec.lengthSq() > 1e-6;
         if (play.dead) {
           // Any direction revives the character.
           if (hasInput) {
@@ -616,9 +638,7 @@ export function ModelInspector({
             play.loop = "__none";
             stopToIdle();
           }
-          return;
-        }
-        if (play.air) {
+        } else if (play.air) {
           play.vy -= JUMP_G * dt;
           play.y += play.vy * dt;
           if (play.y <= 0) {
@@ -629,34 +649,33 @@ export function ModelInspector({
           } else {
             mover.position.set(play.x, play.y, play.z);
           }
-          return;
-        }
-        if (now < play.atkUntil) return;
-        if (hasInput) {
-          let earliest = Infinity;
-          play.dirs.forEach((d) => {
-            const t = play.downAt.get(d) ?? now;
-            if (t < earliest) earliest = t;
-          });
-          const running = now - earliest > RUN_AFTER_MS;
-          const speed = running ? RUN_SPEED : WALK_SPEED;
-          const len = Math.hypot(ix, iz) || 1;
-          play.x = THREE.MathUtils.clamp(play.x + (ix / len) * speed * dt, -LIMIT, LIMIT);
-          play.z = THREE.MathUtils.clamp(play.z + (iz / len) * speed * dt, -LIMIT, LIMIT);
-          play.yaw = angleLerp(play.yaw, Math.atan2(ix / len, iz / len), 1 - Math.exp(-12 * dt));
-          mover.position.set(play.x, 0, play.z);
-          mover.rotation.set(0, play.yaw, 0);
-          playLoopIdx(running ? moveRunIdx : moveWalkIdx);
-          emitAction(running ? "run" : "walk");
-        } else {
-          // A quick tap keeps the walk clip playing briefly so a single press visibly steps.
-          if (now < play.walkUntil) {
+        } else if (now >= play.atkUntil) {
+          if (hasInput) {
+            let earliest = Infinity;
+            play.dirs.forEach((d) => {
+              const t = play.downAt.get(d) ?? now;
+              if (t < earliest) earliest = t;
+            });
+            const running = now - earliest > RUN_AFTER_MS;
+            const speed = running ? RUN_SPEED : WALK_SPEED;
+            moveVec.normalize();
+            play.x = THREE.MathUtils.clamp(play.x + moveVec.x * speed * dt, -LIMIT, LIMIT);
+            play.z = THREE.MathUtils.clamp(play.z + moveVec.z * speed * dt, -LIMIT, LIMIT);
+            // Face the travel direction immediately so the character always walks straight ahead.
+            play.yaw = Math.atan2(moveVec.x, moveVec.z);
+            mover.position.set(play.x, 0, play.z);
+            mover.rotation.set(0, play.yaw, 0);
+            playLoopIdx(running ? moveRunIdx : moveWalkIdx);
+            emitAction(running ? "run" : "walk");
+          } else if (now < play.walkUntil) {
+            // A quick tap keeps the walk clip playing briefly so a single press visibly steps.
             playLoopIdx(moveWalkIdx);
             emitAction("walk");
-            return;
+          } else {
+            stopToIdle();
           }
-          stopToIdle();
         }
+        followCamera();
       };
 
       renderer.setAnimationLoop((time) => {
@@ -780,6 +799,13 @@ export function ModelInspector({
         },
         setPlay(on) {
           play.on = on;
+          if (!on) {
+            // The camera travelled with the character: move it back so exiting play mode doesn't jump the view.
+            camera.position.x -= play.x;
+            camera.position.z -= play.z;
+            controls.target.copy(center);
+            controls.enablePan = true;
+          }
           play.dirs.clear();
           play.downAt.clear();
           play.x = 0;
@@ -792,11 +818,14 @@ export function ModelInspector({
           play.dead = false;
           play.walkUntil = 0;
           play.loop = "__none";
+          prevFX = 0;
+          prevFZ = 0;
           mover.position.set(0, 0, 0);
           mover.rotation.set(0, 0, 0);
           if (on) {
             controls.autoRotate = false;
-            controls.target.copy(center);
+            controls.enablePan = false;
+            controls.target.set(center.x, controls.target.y, center.z);
             if (mixer) {
               if (idxIdle >= 0) playLoopIdx(idxIdle);
               else {
@@ -807,7 +836,6 @@ export function ModelInspector({
             }
             emitAction("idle");
           } else {
-            controls.target.copy(center);
             if (mixer) {
               mixer.stopAllAction();
               restPose();
@@ -828,13 +856,12 @@ export function ModelInspector({
           const held = now - (play.downAt.get(dir) ?? now);
           play.dirs.delete(dir);
           play.downAt.delete(dir);
-          // Quick tap = one visible walk step plus a short walk tail.
+          // Quick tap = one visible walk step plus a short walk tail, straight along the tapped direction.
           if (!play.dead && !play.air && now >= play.atkUntil && held < TAP_MS) {
-            const [vx, vz] = DIR_VEC[dir];
-            const step = radius * 0.35;
-            play.x = THREE.MathUtils.clamp(play.x + vx * step, -LIMIT, LIMIT);
-            play.z = THREE.MathUtils.clamp(play.z + vz * step, -LIMIT, LIMIT);
-            play.yaw = angleLerp(play.yaw, Math.atan2(vx, vz), 0.6);
+            dirVec(dir, tapVec);
+            play.x = THREE.MathUtils.clamp(play.x + tapVec.x * TAP_STEP, -LIMIT, LIMIT);
+            play.z = THREE.MathUtils.clamp(play.z + tapVec.z * TAP_STEP, -LIMIT, LIMIT);
+            play.yaw = Math.atan2(tapVec.x, tapVec.z);
             mover.position.set(play.x, 0, play.z);
             mover.rotation.set(0, play.yaw, 0);
             play.walkUntil = now + 450;
@@ -880,6 +907,8 @@ export function ModelInspector({
         },
         resetPlay() {
           if (!play.on) return;
+          const dx = play.x;
+          const dz = play.z;
           play.dirs.clear();
           play.downAt.clear();
           play.x = 0;
@@ -892,9 +921,14 @@ export function ModelInspector({
           play.dead = false;
           play.walkUntil = 0;
           play.loop = "__none";
+          prevFX = 0;
+          prevFZ = 0;
           mover.position.set(0, 0, 0);
           mover.rotation.set(0, 0, 0);
-          controls.target.copy(center);
+          // Keep the viewing angle: shift the camera back by the same trip the character is undone.
+          camera.position.x -= dx;
+          camera.position.z -= dz;
+          controls.target.set(center.x, controls.target.y, center.z);
           stopToIdle();
         },
         onPlayState(cb) {
@@ -1274,8 +1308,9 @@ export function ModelInspector({
               <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5">
                 {(
                   [
-                    [tv.vertices, stats.vertices.toLocaleString()],
-                    [tv.triangles, stats.triangles.toLocaleString()],
+                    [tv.uniqueVertices, stats.vertices.toLocaleString(locale)],
+                    [tv.bufferVertices, stats.bufferVertices.toLocaleString(locale)],
+                    [tv.triangles, stats.triangles.toLocaleString(locale)],
                     [tv.meshes, String(stats.meshes)],
                     [tv.materials, String(stats.materials)],
                     [
@@ -1300,12 +1335,13 @@ export function ModelInspector({
           <button
             type="button"
             onClick={() => setShowStats((v) => !v)}
+            title={tv.geometryStatsHint}
             className="glass inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-xs font-semibold shadow-float ring-1 ring-black/5 transition-colors hover:text-primary"
           >
             <InfoIcon className="size-3.5" />
-            {tv.trisShort(compact(stats.triangles))}
+            {tv.trisShort(stats.triangles.toLocaleString(locale))}
             <span className="text-muted-foreground">·</span>
-            <span className="font-medium text-muted-foreground">{tv.vertsShort(compact(stats.vertices))}</span>
+            <span className="font-medium text-muted-foreground">{tv.vertsShort(stats.vertices.toLocaleString(locale))}</span>
           </button>
         </div>
       ) : null}

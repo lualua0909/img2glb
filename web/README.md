@@ -38,6 +38,11 @@ Browser ──► Next.js (Vercel / Docker)
   Procedural clips cover movements 01–12 (translate, rotate, scale, walk/run, vehicle, jump/fall, fly, swim,
   sway/bend, physics, interaction, environmental). The rigged GLB with the chosen clips is saved as a new version
   (`POST /api/generations/:id/rig`, multipart `model` + `meta`); no credits, no worker.
+- **Compress**: `POST /api/generations/:id/compress {level: light|balanced|strong}` saves a smaller, lossy copy as a
+  new version (`src/server/compress.ts`, gltf-transform on the web server): PNG textures to WebP (full size / 1024 /
+  512 px), Draco geometry, redundant animation keys dropped, half the faces at `strong`. Skin and clips are kept.
+  A rigged 4.5 MB model comes out around 120–340 KB. The browser decodes Draco with the decoder in `public/draco`
+  (copied from `three/examples/jsm/libs/draco/gltf`; no CDN).
 - **Viewer**: three.js inspector with texture / clay / wireframe / normals / UV checker / rig (skeleton) modes,
   animation playback in every mode (clicking the model plays its `Interact_*` clip), lighting and camera presets,
   mesh stats, PNG screenshots and fullscreen.

@@ -143,6 +143,13 @@ export function raycastAll(m: ModelData, origin: Vector3, dir: Vector3): Interse
   return (m.bvh.raycast(new Ray(origin, dir), DoubleSide) as Intersection[]).sort((a, b) => a.distance - b.distance);
 }
 
+/** A ray on a triangle seam may report the same surface twice; it is one crossing. */
+function depthHits(m: ModelData, origin: Vector3, direction: Vector3) {
+  const hits = raycastAll(m, origin, direction);
+  const epsilon = Math.max(m.size.length() * 1e-7, 1e-9);
+  return hits.filter((hit, i) => i === 0 || hit.distance - hits[i - 1].distance > epsilon);
+}
+
 /**
  * Moves `p` along `axis` to the middle of the first solid part hit when looking from the +axis side (the near
  * side in a view looking down -axis). Used to put joints inside the mesh from a 2D marker position.
@@ -150,8 +157,25 @@ export function raycastAll(m: ModelData, origin: Vector3, dir: Vector3): Interse
 export function midDepth(m: ModelData, p: Vector3, axis: Vector3): Vector3 {
   const far = m.size.length() * 2;
   const origin = p.clone().addScaledVector(axis, m.center.dot(axis) + far - p.dot(axis));
-  const hits = raycastAll(m, origin, axis.clone().negate());
+  const hits = depthHits(m, origin, axis.clone().negate());
   if (hits.length === 0) return p.clone();
   const depth = hits.length > 1 ? (hits[0].point.dot(axis) + hits[1].point.dot(axis)) / 2 : hits[0].point.dot(axis);
+  return p.clone().addScaledVector(axis, depth - p.dot(axis));
+}
+
+/** Snap to the solid interval nearest the existing depth, preserving overlapping back-mounted parts. */
+export function nearestDepth(m: ModelData, p: Vector3, axis: Vector3): Vector3 {
+  const far = m.size.length() * 2;
+  const origin = p.clone().addScaledVector(axis, m.center.dot(axis) + far - p.dot(axis));
+  const hits = depthHits(m, origin, axis.clone().negate());
+  let best = Infinity;
+  let depth = p.dot(axis);
+  for (let i = 0; i < hits.length; i += 2) {
+    const a = hits[i].point.dot(axis);
+    const b = (hits[i + 1] ?? hits[i]).point.dot(axis);
+    const candidate = (a + b) / 2;
+    const distance = Math.abs(candidate - p.dot(axis));
+    if (distance < best) { best = distance; depth = candidate; }
+  }
   return p.clone().addScaledVector(axis, depth - p.dot(axis));
 }

@@ -1,19 +1,24 @@
 import {
+  type AnimationAction,
   AnimationMixer,
   type AnimationClip,
   ArrowHelper,
   Bone,
   BufferAttribute,
   BufferGeometry,
+  CapsuleGeometry,
+  Color,
   Float32BufferAttribute,
   GridHelper,
   HemisphereLight,
   DirectionalLight,
+  DoubleSide,
   LineBasicMaterial,
   LineSegments,
   type Material,
   Matrix4,
-  type Mesh,
+  Mesh,
+  MeshBasicMaterial,
   MeshStandardMaterial,
   NeutralToneMapping,
   type Object3D,
@@ -35,15 +40,20 @@ import {
 import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { gltfLoader } from "@/lib/gltf-loader";
+import type { Attack } from "./clips";
+import type { Hitbox } from "./hitbox";
 import { buildModelData, type ModelData } from "./model";
-import type { RigPlan } from "./rig";
+import type { Door, RigPlan } from "./rig";
 import type { Skin } from "./skin";
 
 export type Stage = {
   model: ModelData;
-  /** Marker step: orthographic view looking down -axis, model shown x-ray. */
-  showMarkers(axis: Vector3): void;
+  /** Marker step: orthographic view looking down -axis (null: keep the last one), model shown x-ray. The user can
+   * orbit it freely. */
+  showMarkers(axis: Vector3 | null): void;
+  /** Marker step: unit vector from the view target toward the camera (follows the user's orbit). */
+  viewAxis(): Vector3;
   /** Skeleton + forward arrow preview while placing markers. */
   setPreview(plan: RigPlan | null): void;
   /** Canvas pixel position of a world point. */
@@ -54,9 +64,13 @@ export type Stage = {
   applyRig(plan: RigPlan, skin: Skin): void;
   /** Animate step for a model rigged by the AI auto-rigger (GLB); `plan` is `autoRigPlan(model)`. */
   applyAutoRig(glb: ArrayBuffer, plan: RigPlan): Promise<void>;
-  play(clip: AnimationClip | null): void;
+  /** `attack`: its hitboxes light up while it hits. */
+  play(clip: AnimationClip | null, attack?: Attack): void;
+  /** Hitbox capsules on their bones (null hides them). */
+  setHitboxes(boxes: Hitbox[] | null): void;
   setShowBones(on: boolean): void;
-  exportGlb(clips: AnimationClip[]): Promise<ArrayBuffer>;
+  /** `extras` go into the glTF scene's extras (animation extras come from each clip's `userData`). */
+  exportGlb(clips: AnimationClip[], extras?: Record<string, unknown>): Promise<ArrayBuffer>;
   /** Called after each rendered frame (to move DOM overlays). */
   onFrame(cb: (() => void) | null): void;
   dispose(): void;
@@ -64,8 +78,75 @@ export type Stage = {
 
 const UP = new Vector3(0, 1, 0);
 
+/**
+ * Rigid skins with parts that open (a door): each triangle goes whole to the part most of its corners are in, and
+ * its other corners are copied, so the part comes away cleanly instead of stretching the triangles along its edge.
+ * Returns the part of every vertex, copies included.
+ */
+function splitParts(geometry: BufferGeometry, partOf: (i: number) => number) {
+  const count = geometry.getAttribute("position").count;
+  const index = geometry.index ? Array.from(geometry.index.array) : Array.from({ length: count }, (_, i) => i);
+  const parts = Array.from({ length: count }, (_, i) => partOf(i));
+  const source: number[] = [];
+  const copies = new Map<string, number>();
+  for (let t = 0; t < index.length; t += 3) {
+    const [a, b, c] = [0, 1, 2].map((k) => parts[index[t + k]]);
+    const major = a === b || a === c ? a : b === c ? b : a;
+    for (let k = 0; k < 3; k++) {
+      const v = index[t + k];
+      if (parts[v] === major) continue;
+      const key = `${v},${major}`;
+      let copy = copies.get(key);
+      if (copy === undefined) {
+        copy = count + source.length;
+        copies.set(key, copy);
+        source.push(v);
+        parts.push(major);
+      }
+      index[t + k] = copy;
+    }
+  }
+  if (!source.length) return parts;
+  for (const [name, attr] of Object.entries(geometry.attributes)) {
+    const flat = "isInterleavedBufferAttribute" in attr ? attr.clone() : attr;
+    const n = flat.itemSize;
+    const array = new (flat.array.constructor as Float32ArrayConstructor)((count + source.length) * n);
+    array.set(flat.array);
+    source.forEach((v, j) => array.set(flat.array.subarray(v * n, v * n + n), (count + j) * n));
+    geometry.setAttribute(name, new BufferAttribute(array, n, flat.normalized));
+  }
+  geometry.setIndex(index);
+  return parts;
+}
+
+/**
+ * Dark recess behind a door, attached to the body: generated models are closed shells, so an open door would show
+ * the inside faces (culled: see-through) instead of a doorway.
+ */
+function doorway(d: Door) {
+  const back = d.normal.clone().multiplyScalar(-(d.depth + 0.3 * d.width.length()));
+  const up = UP.clone().multiplyScalar(d.height);
+  // Front corners on the door plane, counterclockwise seen from the front, then the same ones at the back.
+  const front = [d.hinge.clone(), d.hinge.clone().add(d.width), d.hinge.clone().add(d.width).add(up), d.hinge.clone().add(up)];
+  const corners = [...front, ...front.map((p) => p.clone().add(back))];
+  const quads = [
+    [4, 5, 6, 7], // back
+    [0, 1, 5, 4], // floor
+    [3, 7, 6, 2], // lintel
+    [0, 4, 7, 3], // hinge side
+    [1, 2, 6, 5], // opening side
+  ];
+  const geometry = new BufferGeometry();
+  geometry.setAttribute("position", new Float32BufferAttribute(corners.flatMap((p) => p.toArray()), 3));
+  geometry.setIndex(quads.flatMap(([a, b, c, e]) => [a, b, c, a, c, e]));
+  geometry.computeVertexNormals();
+  const mesh = new Mesh(geometry, new MeshStandardMaterial({ color: 0x1c1410, roughness: 1, side: DoubleSide }));
+  mesh.name = "Doorway";
+  return mesh;
+}
+
 export async function createStage(el: HTMLElement, src: string): Promise<Stage> {
-  const gltf = await new GLTFLoader().loadAsync(src);
+  const gltf = await gltfLoader().loadAsync(src);
   const original = gltf.scene;
   original.updateMatrixWorld(true);
   const meshes: Mesh[] = [];
@@ -115,10 +196,8 @@ export async function createStage(el: HTMLElement, src: string): Promise<Stage> 
   orbit.update();
   const ortho = new OrthographicCamera(-1, 1, 1, -1, radius / 100, radius * 100);
   const pan = new OrbitControls(ortho, canvas);
-  pan.enableRotate = false;
   pan.enabled = false;
   let camera: PerspectiveCamera | OrthographicCamera = persp;
-  let viewAxis = new Vector3(0, 0, 1);
   let viewExtent = { w: 1, h: 1 };
 
   const fitOrtho = () => {
@@ -139,14 +218,16 @@ export async function createStage(el: HTMLElement, src: string): Promise<Stage> 
   resize();
 
   // ---- marker-step preview ----
+  // Colored like the markers: left blue, right orange, center green.
   const previewLines = new LineSegments(
     new BufferGeometry(),
-    new LineBasicMaterial({ color: 0x0071e3, depthTest: false, transparent: true }),
+    new LineBasicMaterial({ vertexColors: true, depthTest: false, transparent: true }),
   );
   const previewJoints = new Points(
     new BufferGeometry(),
-    new PointsMaterial({ color: 0x0071e3, size: 7, sizeAttenuation: false, depthTest: false, transparent: true }),
+    new PointsMaterial({ vertexColors: true, size: 7, sizeAttenuation: false, depthTest: false, transparent: true }),
   );
+  const sideColor = (name: string) => new Color(/L$/.test(name) ? 0x0071e3 : /R$/.test(name) ? 0xff9500 : 0x34c759).toArray();
   previewLines.renderOrder = previewJoints.renderOrder = 998;
   let arrow: ArrowHelper | null = null;
   scene.add(previewLines, previewJoints);
@@ -156,13 +237,31 @@ export async function createStage(el: HTMLElement, src: string): Promise<Stage> 
     null;
   let mixer: AnimationMixer | null = null;
   let showBones = false;
+  // ---- hitboxes: capsules parented to their bones; red while the playing attack hits with them ----
+  const hitIdle = new MeshBasicMaterial({ color: 0xff9500, wireframe: true, transparent: true, opacity: 0.5, depthTest: false });
+  const hitActive = new MeshBasicMaterial({ color: 0xff3b30, wireframe: true, transparent: true, opacity: 0.9, depthTest: false });
+  let capsules: Mesh[] = [];
+  let playing: { action: AnimationAction; attack?: Attack } | null = null;
+  const clearHitboxes = () => {
+    capsules.forEach((c) => {
+      c.removeFromParent();
+      c.geometry.dispose();
+    });
+    capsules = [];
+  };
   const clearRig = () => {
     if (!rig) return;
+    clearHitboxes();
+    playing = null;
     mixer?.stopAllAction();
     mixer = null;
     scene.remove(rig.group, rig.helper);
     rig.group.traverse((o) => {
       if ((o as SkinnedMesh).isSkinnedMesh) (o as SkinnedMesh).geometry.dispose();
+      if (o.name === "Doorway") {
+        (o as Mesh).geometry.dispose();
+        ((o as Mesh).material as Material).dispose();
+      }
     });
     rig.helper.dispose();
     rig = null;
@@ -180,6 +279,12 @@ export async function createStage(el: HTMLElement, src: string): Promise<Stage> 
     timer.update(time);
     const dt = timer.getDelta();
     mixer?.update(dt);
+    if (capsules.length) {
+      const a = playing?.attack;
+      const t = playing?.action.time ?? 0;
+      const on = !!a && t >= a.active[0] && t <= a.active[1];
+      for (const c of capsules) c.material = on && a!.bones.includes(c.name) ? hitActive : hitIdle;
+    }
     (camera === persp ? orbit : pan).update();
     renderer.render(scene, camera);
     frameCb?.();
@@ -223,24 +328,29 @@ export async function createStage(el: HTMLElement, src: string): Promise<Stage> 
       clearRig();
       if (!original.parent) scene.add(original);
       setMaterials(xray);
-      viewAxis = axis.clone().normalize();
-      const up = Math.abs(viewAxis.y) > 0.9 ? new Vector3(0, 0, -1) : UP.clone();
-      const right = up.clone().cross(viewAxis).normalize();
+      camera = ortho;
+      orbit.enabled = false;
+      pan.enabled = true;
+      if (!axis) return;
+      const top = Math.abs(axis.y) > 0.9;
+      // Straight down, nudged toward +z so the camera keeps +Y up (screen up = -z) and can orbit from there.
+      const viewAxis = top ? new Vector3(0, 1, 1e-3).normalize() : axis.clone().normalize();
+      const up = top ? new Vector3(0, 0, -1) : UP.clone();
+      const right = up.clone().cross(top ? UP : viewAxis).normalize();
       viewExtent = {
         w: Math.abs(size.x * right.x) + Math.abs(size.y * right.y) + Math.abs(size.z * right.z),
         h: Math.abs(size.x * up.x) + Math.abs(size.y * up.y) + Math.abs(size.z * up.z),
       };
-      ortho.up.copy(up);
       ortho.position.copy(center).addScaledVector(viewAxis, radius * 4);
       ortho.zoom = 1;
       pan.target.copy(center);
       ortho.lookAt(center);
       fitOrtho();
       pan.update();
-      camera = ortho;
-      orbit.enabled = false;
-      pan.enabled = true;
-      grid.visible = Math.abs(viewAxis.y) < 0.9;
+      grid.visible = !top;
+    },
+    viewAxis() {
+      return camera.getWorldDirection(new Vector3()).negate();
     },
     setPreview(plan) {
       if (arrow) {
@@ -253,14 +363,21 @@ export async function createStage(el: HTMLElement, src: string): Promise<Stage> 
         return;
       }
       const seg: number[] = [];
+      const segColor: number[] = [];
       const joints: number[] = [];
+      const jointColor: number[] = [];
       for (const b of plan.bones) {
         if (!b.deform) continue;
+        const c = sideColor(b.name);
         seg.push(...b.head.toArray(), ...b.tail.toArray());
+        segColor.push(...c, ...c);
         joints.push(...b.head.toArray());
+        jointColor.push(...c);
       }
       previewLines.geometry.setAttribute("position", new Float32BufferAttribute(seg, 3));
+      previewLines.geometry.setAttribute("color", new Float32BufferAttribute(segColor, 3));
       previewJoints.geometry.setAttribute("position", new Float32BufferAttribute(joints, 3));
+      previewJoints.geometry.setAttribute("color", new Float32BufferAttribute(jointColor, 3));
       previewLines.visible = previewJoints.visible = true;
       const base = center.clone().setY(box.min.y + 0.02 * size.y);
       arrow = new ArrowHelper(plan.frame.forward, base, 0.45 * Math.max(plan.length, size.y), 0xff9500, 0.08 * radius, 0.05 * radius);
@@ -274,8 +391,9 @@ export async function createStage(el: HTMLElement, src: string): Promise<Stage> 
       return { x: ((v.x + 1) / 2) * el.clientWidth, y: ((1 - v.y) / 2) * el.clientHeight };
     },
     unproject(x, y, depthOf) {
+      const axis = stage.viewAxis();
       const v = new Vector3((x / el.clientWidth) * 2 - 1, 1 - (y / el.clientHeight) * 2, 0).unproject(camera);
-      return v.addScaledVector(viewAxis, depthOf.clone().sub(v).dot(viewAxis));
+      return v.addScaledVector(axis, depthOf.clone().sub(v).dot(axis));
     },
     applyRig(plan, skin) {
       clearRig();
@@ -295,12 +413,21 @@ export async function createStage(el: HTMLElement, src: string): Promise<Stage> 
       });
       group.updateMatrixWorld(true);
       const skeleton = new Skeleton(bones);
+      const doors = plan.skin.mode === "rigid" ? (plan.skin.doors ?? []) : [];
       meshes.forEach((mesh, k) => {
         const geometry = mesh.geometry.clone().applyMatrix4(mesh.matrixWorld);
         const map = model.maps[k];
-        const index = new Uint16Array(map.length * 4);
-        const weight = new Float32Array(map.length * 4);
-        for (let i = 0; i < map.length; i++) {
+        // Rigid skins weigh every vertex fully to one bone: its first influence.
+        const parts = doors.length ? splitParts(geometry, (i) => skin.index[map[i] * 4]) : null;
+        const n = parts?.length ?? map.length;
+        const index = new Uint16Array(n * 4);
+        const weight = new Float32Array(n * 4);
+        for (let i = 0; i < n; i++) {
+          if (parts) {
+            index[i * 4] = parts[i];
+            weight[i * 4] = 1;
+            continue;
+          }
           index.set(skin.index.subarray(map[i] * 4, map[i] * 4 + 4), i * 4);
           weight.set(skin.weight.subarray(map[i] * 4, map[i] * 4 + 4), i * 4);
         }
@@ -311,10 +438,20 @@ export async function createStage(el: HTMLElement, src: string): Promise<Stage> 
         group.add(skinned);
         skinned.bind(skeleton, new Matrix4());
       });
+      const rigid = plan.skin;
+      if (rigid.mode === "rigid") {
+        const body = plan.bones.findIndex((b) => b.name === rigid.body);
+        for (const d of doors) {
+          const recess = doorway(d);
+          // Bones have no rest rotation: the body bone's frame is the world frame moved to its head.
+          recess.position.copy(plan.bones[body].head).negate();
+          bones[body].add(recess);
+        }
+      }
       showRig(group, bones, plan.frame);
     },
     async applyAutoRig(glb, plan) {
-      const loaded = (await new GLTFLoader().parseAsync(glb, "")).scene;
+      const loaded = (await gltfLoader().parseAsync(glb, "")).scene;
       clearRig();
       scene.remove(original);
       stage.setPreview(null);
@@ -336,26 +473,48 @@ export async function createStage(el: HTMLElement, src: string): Promise<Stage> 
       group.updateMatrixWorld(true);
       showRig(group, bones, plan.frame);
     },
-    play(clip) {
+    play(clip, attack) {
       if (!mixer) return;
       mixer.stopAllAction();
       restPose();
-      if (clip) mixer.clipAction(clip).reset().play();
+      playing = clip ? { action: mixer.clipAction(clip).reset().play(), attack } : null;
+    },
+    setHitboxes(boxes) {
+      clearHitboxes();
+      if (!rig || !boxes) return;
+      for (const h of boxes) {
+        const bone = rig.bones.find((b) => b.name === h.bone);
+        if (!bone) continue;
+        // CapsuleGeometry runs along +Y, centered: turn it onto the bone and slide it out half its length.
+        const axis = new Vector3(...h.axis);
+        const c = new Mesh(new CapsuleGeometry(h.radius, Math.max(h.length - 2 * h.radius, 0), 4, 12), hitIdle);
+        c.name = h.bone;
+        c.quaternion.setFromUnitVectors(UP, axis);
+        c.position.copy(axis).multiplyScalar(h.start + h.length / 2);
+        c.renderOrder = 997;
+        bone.add(c);
+        capsules.push(c);
+      }
     },
     setShowBones(on) {
       showBones = on;
       if (rig) rig.helper.visible = on;
     },
-    async exportGlb(clips) {
+    async exportGlb(clips, extras = {}) {
       if (!rig) throw new Error("Not rigged");
       mixer?.stopAllAction();
       restPose();
       rig.group.updateMatrixWorld(true);
       const skinned = rig.group.children.filter((o): o is SkinnedMesh => (o as SkinnedMesh).isSkinnedMesh);
       skinned.forEach((m, k) => (m.material = materials[k]));
+      rig.group.userData = extras;
+      // Hitbox capsules are only a preview: hidden objects are left out of the file.
+      capsules.forEach((c) => (c.visible = false));
       try {
         return (await new GLTFExporter().parseAsync(rig.group, { binary: true, animations: clips })) as ArrayBuffer;
       } finally {
+        rig.group.userData = {};
+        capsules.forEach((c) => (c.visible = true));
         skinned.forEach((m, k) => (m.material = display[k]));
       }
     },
@@ -376,7 +535,7 @@ export async function createStage(el: HTMLElement, src: string): Promise<Stage> 
         });
       disposeTree(original);
       materials.flat().forEach((m) => m.dispose());
-      [xray, clay, previewLines.material, previewJoints.material].forEach((m) => (m as Material).dispose());
+      [xray, clay, hitIdle, hitActive, previewLines.material, previewJoints.material].forEach((m) => (m as Material).dispose());
       previewLines.geometry.dispose();
       previewJoints.geometry.dispose();
       arrow?.dispose();

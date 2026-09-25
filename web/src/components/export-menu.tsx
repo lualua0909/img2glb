@@ -43,8 +43,8 @@ export function ExportMenu({ modelUrl, downloadUrl, baseName }: { modelUrl: stri
   async function convert(format: Format) {
     setBusy(format);
     try {
-      const { GLTFLoader } = await import("three/examples/jsm/loaders/GLTFLoader.js");
-      const gltf = await new GLTFLoader().loadAsync(modelUrl);
+      const { gltfLoader } = await import("@/lib/gltf-loader");
+      const gltf = await gltfLoader().loadAsync(modelUrl);
       const scene = gltf.scene;
       if (format === "stl") {
         const { STLExporter } = await import("three/examples/jsm/exporters/STLExporter.js");

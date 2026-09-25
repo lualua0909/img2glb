@@ -64,3 +64,7 @@ export const MAX_TEXTURE_SIZE: TextureSize = 4096;
 export const MAX_UPLOAD_BYTES = 4 * 1024 * 1024; // client downsizes to 1024px before upload
 export const ACCEPTED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
 export const MAX_PROMPT_LENGTH = 300;
+
+/** "Compress model" levels, lightest loss first (presets in src/server/compress.ts). */
+export const COMPRESS_LEVELS = ["light", "balanced", "strong"] as const;
+export type CompressLevel = (typeof COMPRESS_LEVELS)[number];

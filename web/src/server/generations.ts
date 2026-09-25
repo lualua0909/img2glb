@@ -1,15 +1,16 @@
 import "server-only";
 import { and, asc, count, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
-import { generationCost, MAX_TEXTURE_SIZE, type Quality, type UseCase } from "@/lib/config";
+import { type CompressLevel, generationCost, MAX_TEXTURE_SIZE, type Quality, type UseCase } from "@/lib/config";
 import { db, schema } from "@/lib/db";
-import type { Generation, GenerationStats, RefineOptions, RigInfo } from "@/lib/db/schema";
+import type { CompressInfo, Generation, GenerationStats, RefineOptions, RigInfo } from "@/lib/db/schema";
 import { isLocal } from "@/lib/env";
 import { configuredProviders, getProvider } from "@/lib/providers";
 import type { StartInput } from "@/lib/providers/types";
 import type { AppSettings } from "@/lib/settings";
 import { debitCredits, grantCredits } from "./credits";
 import { getSettings } from "./settings";
-import { copyObject, deleteObjects, fetchBytes, keys, putObject, signedFileUrl, signedGetUrl } from "./storage";
+import { compressGlb } from "./compress";
+import { copyObject, deleteObjects, fetchBytes, keys, putObject, readObject, signedFileUrl, signedGetUrl } from "./storage";
 
 export class UserFacingError extends Error {
   constructor(
@@ -333,7 +334,26 @@ export async function createRiggedVersion(userId: string, parentId: string, byte
   if (!parent) return null;
   if (parent.status !== "succeeded" || !parent.modelKey) throw new UserFacingError("Model is not ready", 409);
   if (String.fromCharCode(...bytes.slice(0, 4)) !== "glTF") throw new UserFacingError("Invalid GLB file");
+  return insertVersion(parent, bytes, { rig });
+}
 
+/** Saves a smaller, lossy copy of a finished model as a new version (no provider job, no credits). */
+export async function createCompressedVersion(userId: string, parentId: string, level: CompressLevel) {
+  const parent = await getUserGeneration(userId, parentId);
+  if (!parent) return null;
+  if (parent.status !== "succeeded" || !parent.modelKey) throw new UserFacingError("Model is not ready", 409);
+  const original = await readObject(parent.modelKey).catch((err) => {
+    if (err?.code === "ENOENT") throw new UserFacingError("Model file is missing on the server", 404);
+    throw err;
+  });
+  const bytes = await compressGlb(original, level);
+  if (bytes.byteLength >= original.byteLength) throw new UserFacingError("This model is already compressed", 409);
+  return insertVersion(parent, bytes, { rig: parent.rig, compress: { level, fromBytes: original.byteLength } });
+}
+
+/** Insert a finished version of `parent` holding `bytes` as its model. */
+async function insertVersion(parent: Generation, bytes: Uint8Array, extra: { rig: RigInfo | null; compress?: CompressInfo }) {
+  const { userId } = parent;
   const id = crypto.randomUUID();
   const modelKey = keys.model(userId, id);
   const inputImageKey = parent.inputImageKey ? keys.input(userId, id, parent.inputImageKey.split(".").pop()!) : null;
@@ -362,7 +382,7 @@ export async function createRiggedVersion(userId: string, parentId: string, byte
         modelBytes: bytes.byteLength,
         parentId: parent.id,
         rootId: parent.rootId ?? parent.id,
-        rig,
+        ...extra,
         completedAt: new Date(),
       })
       .returning();
@@ -382,7 +402,7 @@ export async function replaceEditedModel(userId: string, id: string, bytes: Uint
   await putObject(gen.modelKey, bytes);
   const [row] = await db
     .update(schema.generation)
-    .set({ modelBytes: bytes.byteLength })
+    .set({ modelBytes: bytes.byteLength, compress: null }) // the browser re-exports it uncompressed
     .where(eq(schema.generation.id, id))
     .returning();
   return row;
@@ -421,6 +441,7 @@ export type GenerationDTO = {
   rootId: string | null;
   refine: RefineOptions | null;
   rig: RigInfo | null;
+  compress: CompressInfo | null;
   engine: string;
   stats: GenerationStats | null;
 };
@@ -455,12 +476,13 @@ export async function toDTO(g: Generation): Promise<GenerationDTO> {
     rootId: g.rootId,
     refine: g.refine,
     rig: g.rig,
+    compress: g.compress,
     engine: g.provider,
     stats: g.stats,
   };
 }
 
-export type VersionDTO = Pick<GenerationDTO, "id" | "status" | "inputImageUrl" | "refine" | "rig" | "createdAt">;
+export type VersionDTO = Pick<GenerationDTO, "id" | "status" | "inputImageUrl" | "refine" | "rig" | "compress" | "createdAt">;
 
 /** Every version of a model (the original and its refinements), oldest first. */
 export async function listVersions(userId: string, gen: Generation): Promise<VersionDTO[]> {
@@ -479,6 +501,7 @@ export async function listVersions(userId: string, gen: Generation): Promise<Ver
       inputImageUrl: await signedFileUrl(g.inputImageKey),
       refine: g.refine,
       rig: g.rig,
+      compress: g.compress,
       createdAt: g.createdAt.toISOString(),
     })),
   );

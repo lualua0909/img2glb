@@ -1,6 +1,6 @@
 import "server-only";
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { access, copyFile, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { env } from "@/lib/env";
 
@@ -33,6 +33,12 @@ export async function putObject(key: string, body: Uint8Array) {
   if (!file) throw new Error(`Invalid storage key: ${key}`);
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, body);
+}
+
+export async function readObject(key: string) {
+  const file = localPath(key);
+  if (!file) throw new Error(`Invalid storage key: ${key}`);
+  return new Uint8Array(await readFile(file));
 }
 
 export async function copyObject(from: string, to: string) {

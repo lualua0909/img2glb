@@ -51,6 +51,13 @@ export type RigInfo = {
   clips: string[];
 };
 
+/** A smaller copy of a model: WebP textures, Draco geometry, fewer faces at "strong" (see src/server/compress.ts). */
+export type CompressInfo = {
+  level: "light" | "balanced" | "strong";
+  /** Size of the model it was compressed from. */
+  fromBytes: number;
+};
+
 export const generationMode = pgEnum("generation_mode", ["image", "text"]);
 export const generationStatus = pgEnum("generation_status", ["queued", "processing", "succeeded", "failed"]);
 
@@ -91,6 +98,7 @@ export const generation = pgTable(
     rootId: text("root_id"),
     refine: jsonb("refine").$type<RefineOptions>(),
     rig: jsonb("rig").$type<RigInfo>(),
+    compress: jsonb("compress").$type<CompressInfo>(),
     /** Worker timings (seconds per stage) and peak memory (GB), reported when the job finishes. */
     stats: jsonb("stats").$type<GenerationStats>(),
     /** Short lease so only one request advances a job at a time. */
