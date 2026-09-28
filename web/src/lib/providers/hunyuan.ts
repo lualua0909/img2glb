@@ -55,7 +55,9 @@ export function createHunyuanProvider(opts: { name: string; url: string; token: 
       });
       if (!res.ok) throw new Error(`Worker rejected job: ${res.status} ${await res.text()}`);
       const job = (await res.json()) as WorkerJob;
-      return { jobId: job.id };
+      // The worker's zero-based queue position excludes the job currently using the GPU.
+      // Reserve one extra slot for it, plus this job's own execution time.
+      return { jobId: job.id, queueSlots: job.status === "queued" ? (job.queue_position ?? 0) + 2 : 1 };
     },
 
     async poll(state: ProviderState): Promise<PollResult> {
@@ -67,7 +69,7 @@ export function createHunyuanProvider(opts: { name: string; url: string; token: 
 
       switch (job.status) {
         case "queued":
-          return { type: "running", state, message: `In queue (position ${(job.queue_position ?? 0) + 1})`, progress: 0 };
+          return { type: "running", state: { ...state, queueSlots: Math.max(Number(state.queueSlots) || 1, (job.queue_position ?? 0) + 2) }, message: `In queue (position ${(job.queue_position ?? 0) + 1})`, progress: 0 };
         case "running":
           return { type: "running", state, message: job.stage ?? "Generating", progress: job.progress };
         case "failed":

@@ -5,6 +5,7 @@ import { db, schema } from "@/lib/db";
 import type { CompressInfo, Generation, GenerationStats, RefineOptions, RigInfo } from "@/lib/db/schema";
 import { isLocal } from "@/lib/env";
 import { configuredProviders, getProvider } from "@/lib/providers";
+import { generationTimeoutMinutes } from "@/lib/generation-timeout";
 import type { StartInput } from "@/lib/providers/types";
 import type { AppSettings } from "@/lib/settings";
 import { debitCredits, grantCredits } from "./credits";
@@ -80,6 +81,45 @@ export async function createGeneration(userId: string, input: CreateInput): Prom
   });
 }
 
+/** Retry a failed job using its stored input and settings. Keep the failed attempt for history. */
+export async function retryGeneration(userId: string, generationId: string): Promise<Generation> {
+  const source = await getUserGeneration(userId, generationId);
+  if (!source) throw new UserFacingError("Not found", 404);
+  if (source.status !== "failed") throw new UserFacingError("Only failed generations can be retried", 409);
+  if (source.refine) {
+    if (!source.parentId) throw new UserFacingError("Original model is missing", 409);
+    return createRefinement(userId, source.parentId, source.refine);
+  }
+
+  const settings = await getSettings();
+  if (settings.generation.paused) throw new UserFacingError(settings.generation.pausedMessage, 503);
+  const provider = pickEngine(source.provider);
+  if (source.mode === "image" && !source.inputImageKey)
+    throw new UserFacingError("Reference image is missing", 409);
+  const id = crypto.randomUUID();
+  const inputImageKey = source.inputImageKey ? keys.input(userId, id, source.inputImageKey.split(".").pop()!) : null;
+  if (source.inputImageKey && inputImageKey) await copyObject(source.inputImageKey, inputImageKey);
+
+  return submitGeneration(settings, {
+    id,
+    userId,
+    mode: source.mode,
+    prompt: source.prompt,
+    inputImageKey,
+    textured: source.textured,
+    quality: source.quality,
+    useCase: source.useCase,
+    seed: source.seed,
+    faceCount: source.faceCount,
+    textureSize: source.textureSize,
+    flatShading: source.flatShading,
+    cost: isLocal() ? 0 : generationCost(source, settings.credits),
+    parentId: source.id,
+    rootId: source.rootId ?? source.id,
+    provider,
+  });
+}
+
 function pickEngine(name: string) {
   if (!configuredProviders().includes(name as AppSettings["generation"]["provider"]))
     throw new UserFacingError(`Engine "${name}" is not configured`, 400);
@@ -131,7 +171,7 @@ export async function createRefinement(userId: string, parentId: string, refine:
     {
       prompt: refine.prompt,
       imageGuidance: EDIT_IMAGE_GUIDANCE[refine.strength],
-      meshUrl: refine.keepShape ? await signedGetUrl(parent.modelKey, { expiresIn: 6 * 3600 }) : undefined,
+      meshUrl: refine.keepShape ? await signedGetUrl(parent.modelKey, { expiresIn: 7 * 24 * 3600 }) : undefined,
     },
   );
 }
@@ -146,6 +186,7 @@ async function submitGeneration(settings: AppSettings, row: NewGeneration, refin
   const { id, userId, cost } = row;
   const provider = getProvider(row.provider);
 
+  let timeoutMinutes = settings.limits.jobTimeoutMinutes;
   await db.transaction(async (tx) => {
     if (!isLocal()) {
       // Debit first: the row lock on `user` serialises concurrent requests from the same user,
@@ -160,6 +201,9 @@ async function submitGeneration(settings: AppSettings, row: NewGeneration, refin
         throw new UserFacingError(`You can run up to ${maxActiveJobsPerUser} generations at once`, 429);
     }
 
+    const [{ ahead }] = await tx.select({ ahead: count() }).from(schema.generation)
+      .where(and(eq(schema.generation.provider, provider.name), inArray(schema.generation.status, ACTIVE)));
+    timeoutMinutes *= ahead + 1;
     await tx.insert(schema.generation).values({ ...row, provider: provider.name, progressMessage: "Submitting" });
   }).catch(async (err) => {
     if (row.inputImageKey) await deleteObjects([row.inputImageKey]).catch(() => {});
@@ -169,7 +213,7 @@ async function submitGeneration(settings: AppSettings, row: NewGeneration, refin
   try {
     const preset = settings.quality[row.quality as Quality];
     const state = await provider.start({
-      imageUrl: row.inputImageKey ? await signedGetUrl(row.inputImageKey, { expiresIn: 6 * 3600 }) : undefined,
+      imageUrl: row.inputImageKey ? await signedGetUrl(row.inputImageKey, { expiresIn: 7 * 24 * 3600 }) : undefined,
       // Text mode sends the prompt; once a reference image exists (refinement), the image is the input.
       prompt: row.inputImageKey ? undefined : (row.prompt ?? undefined),
       textured: row.textured,
@@ -184,7 +228,7 @@ async function submitGeneration(settings: AppSettings, row: NewGeneration, refin
     });
     const [started] = await db
       .update(schema.generation)
-      .set({ status: "processing", providerState: state, progressMessage: "In queue" })
+      .set({ status: "processing", providerState: { ...state, timeoutMinutes: generationTimeoutMinutes(settings.limits.jobTimeoutMinutes, { ...state, timeoutMinutes }) }, progressMessage: "In queue" })
       .where(eq(schema.generation.id, id))
       .returning();
     return started;
@@ -236,10 +280,7 @@ export async function advanceGeneration(id: string): Promise<void> {
 
   const settings = await getSettings();
   const ageMin = (Date.now() - gen.createdAt.getTime()) / 60_000;
-  if (ageMin > settings.limits.jobTimeoutMinutes) {
-    await failGeneration(id, "Generation timed out.");
-    return;
-  }
+  const timeoutMinutes = generationTimeoutMinutes(settings.limits.jobTimeoutMinutes, gen.providerState);
   if (!(configuredProviders() as string[]).includes(gen.provider)) {
     // Job from a removed or unconfigured engine: never poll a worker that is not configured.
     await failGeneration(id, "Generation provider changed.");
@@ -255,10 +296,18 @@ export async function advanceGeneration(id: string): Promise<void> {
   try {
     const result = await getProvider(gen.provider).poll(gen.providerState);
     if (result.type === "running") {
+      const nextTimeout = generationTimeoutMinutes(settings.limits.jobTimeoutMinutes, {
+        ...result.state,
+        timeoutMinutes,
+      });
+      if (ageMin > nextTimeout) {
+        await failGeneration(id, "Generation timed out.");
+        return;
+      }
       await db
         .update(schema.generation)
         .set({
-          providerState: result.state,
+          providerState: { ...result.state, timeoutMinutes: nextTimeout },
           progressMessage: result.message,
           progress: result.progress ?? null,
           leaseUntil: null,
@@ -314,7 +363,8 @@ export async function advanceGeneration(id: string): Promise<void> {
     // Transient (network, provider 5xx, storage): keep job alive; the next poll retries and the
     // timeout above eventually fails + refunds it.
     console.error(`[generation ${id}] advance error`, err);
-    await releaseLease(id);
+    if (ageMin > timeoutMinutes) await failGeneration(id, "Generation timed out.");
+    else await releaseLease(id);
   }
 }
 

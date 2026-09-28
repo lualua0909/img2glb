@@ -69,12 +69,21 @@ export function PaintEditor({
         const g = m.geometry;
         if (!g.getAttribute("color"))
           g.setAttribute("color", new THREE.BufferAttribute(new Float32Array(g.getAttribute("position").count * 3).fill(1), 3));
-        m.material = new THREE.MeshStandardMaterial({
-          vertexColors: true,
-          roughness: 0.8,
-          metalness: 0,
-          flatShading: !g.getAttribute("normal"),
-        });
+        // Keep saved emission (and other PBR settings) when painting base colors later.
+        const paintMaterial = (material: Material) => {
+          if (material instanceof THREE.MeshStandardMaterial) {
+            material.vertexColors = true;
+            material.needsUpdate = true;
+            return material;
+          }
+          return new THREE.MeshStandardMaterial({
+            vertexColors: true,
+            roughness: 0.8,
+            metalness: 0,
+            flatShading: !g.getAttribute("normal"),
+          });
+        };
+        m.material = Array.isArray(m.material) ? m.material.map(paintMaterial) : paintMaterial(m.material);
       }
 
       const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -204,7 +213,7 @@ export function PaintEditor({
         controls.dispose();
         for (const m of meshes) {
           m.geometry.dispose();
-          (m.material as Material).dispose();
+          for (const material of Array.isArray(m.material) ? m.material : [m.material]) material.dispose();
         }
         renderer.dispose();
         canvas.remove();

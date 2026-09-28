@@ -41,11 +41,14 @@ import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { gltfLoader } from "@/lib/gltf-loader";
+import { restoreTemplateRig } from "@/lib/blender/template";
+import { addWeaponSockets } from "./attachments";
 import type { Attack } from "./clips";
 import type { Hitbox } from "./hitbox";
 import { buildModelData, type ModelData } from "./model";
 import type { Door, RigPlan } from "./rig";
 import type { Skin } from "./skin";
+import { splitWeightedParts } from "./parts";
 
 export type Stage = {
   model: ModelData;
@@ -64,11 +67,15 @@ export type Stage = {
   applyRig(plan: RigPlan, skin: Skin): void;
   /** Animate step for a model rigged by the AI auto-rigger (GLB); `plan` is `autoRigPlan(model)`. */
   applyAutoRig(glb: ArrayBuffer, plan: RigPlan): Promise<void>;
+  applyBlenderTemplate(glb: ArrayBuffer, plan: RigPlan): Promise<void>;
   /** `attack`: its hitboxes light up while it hits. */
   play(clip: AnimationClip | null, attack?: Attack): void;
   /** Hitbox capsules on their bones (null hides them). */
   setHitboxes(boxes: Hitbox[] | null): void;
   setShowBones(on: boolean): void;
+  /** Rig check: each bone's part (the triangles it drives most) in its own color, pulled apart along the skeleton by
+   * `spread` (0: in place); null goes back to the skinned model. Stops the playing clip. */
+  setParts(spread: number | null): void;
   /** `extras` go into the glTF scene's extras (animation extras come from each clip's `userData`). */
   exportGlb(clips: AnimationClip[], extras?: Record<string, unknown>): Promise<ArrayBuffer>;
   /** Called after each rendered frame (to move DOM overlays). */
@@ -251,6 +258,7 @@ export async function createStage(el: HTMLElement, src: string): Promise<Stage> 
   };
   const clearRig = () => {
     if (!rig) return;
+    clearParts();
     clearHitboxes();
     playing = null;
     mixer?.stopAllAction();
@@ -315,6 +323,65 @@ export async function createStage(el: HTMLElement, src: string): Promise<Stage> 
     pan.enabled = false;
     orbit.enabled = true;
     grid.visible = true;
+  };
+
+  // ---- rig check: exploded parts ----
+  let parts: {
+    group: Scene;
+    items: { mesh: Mesh; bone: number }[];
+    heads: Vector3[];
+    parents: number[];
+    lines: LineSegments;
+  } | null = null;
+  const clearParts = () => {
+    if (!parts) return;
+    scene.remove(parts.group);
+    parts.group.traverse((o) => {
+      const m = o as Mesh;
+      if (m.isMesh || (o as LineSegments).isLineSegments) {
+        m.geometry.dispose();
+        (m.material as Material).dispose();
+      }
+    });
+    parts = null;
+    if (!rig) return;
+    rig.group.visible = true;
+    rig.helper.visible = showBones;
+  };
+  /** Cuts the preview surface at interpolated weight boundaries; original geometry/weights stay untouched. */
+  const buildParts = () => {
+    const r = rig!;
+    const group = new Scene();
+    const items: { mesh: Mesh; bone: number }[] = [];
+    const used: number[] = [];
+    const colorOf = (bone: number) => {
+      let k = used.indexOf(bone);
+      if (k < 0) k = used.push(bone) - 1;
+      // Golden-angle hues: neighbors in the bone list get far-apart colors.
+      return new Color().setHSL((k * 0.618034) % 1, 0.65, 0.58);
+    };
+    r.group.traverse((o) => {
+      const skinned = o as SkinnedMesh;
+      if (!skinned.isSkinnedMesh) return;
+      const geometry = skinned.geometry.clone().applyMatrix4(skinned.matrixWorld);
+      const split = splitWeightedParts(geometry, i => r.bones.indexOf(skinned.skeleton.bones[i]));
+      for (const [bone, part] of split) {
+        const mesh = new Mesh(part, new MeshStandardMaterial({ color: colorOf(bone), roughness: 0.6 }));
+        mesh.name = r.bones[bone]?.name ?? "Part";
+        group.add(mesh);
+        items.push({ mesh, bone });
+      }
+      geometry.dispose();
+    });
+    const heads = r.bones.map((b) => b.getWorldPosition(new Vector3()));
+    const parents = r.bones.map((b) => r.bones.indexOf(b.parent as Bone));
+    const lines = new LineSegments(
+      new BufferGeometry(),
+      new LineBasicMaterial({ color: 0x34c759, depthTest: false, transparent: true }),
+    );
+    lines.renderOrder = 999;
+    group.add(lines);
+    return { group, items, heads, parents, lines };
   };
 
   const setMaterials = (m: Material | null) =>
@@ -412,6 +479,7 @@ export async function createStage(el: HTMLElement, src: string): Promise<Stage> 
         (parent >= 0 ? bones[parent] : group).add(bones[i]);
       });
       group.updateMatrixWorld(true);
+      addWeaponSockets(plan, bones);
       const skeleton = new Skeleton(bones);
       const doors = plan.skin.mode === "rigid" ? (plan.skin.doors ?? []) : [];
       meshes.forEach((mesh, k) => {
@@ -449,6 +517,14 @@ export async function createStage(el: HTMLElement, src: string): Promise<Stage> 
         }
       }
       showRig(group, bones, plan.frame);
+    },
+    async applyBlenderTemplate(glb, plan) {
+      const loaded = (await gltfLoader().parseAsync(glb, "")).scene;
+      const restored = restoreTemplateRig(loaded, plan);
+      clearRig();
+      scene.remove(original);
+      stage.setPreview(null);
+      showRig(restored.group, restored.bones, plan.frame);
     },
     async applyAutoRig(glb, plan) {
       const loaded = (await gltfLoader().parseAsync(glb, "")).scene;
@@ -498,22 +574,57 @@ export async function createStage(el: HTMLElement, src: string): Promise<Stage> 
     },
     setShowBones(on) {
       showBones = on;
-      if (rig) rig.helper.visible = on;
+      if (rig) rig.helper.visible = on && !parts;
+    },
+    setParts(spread) {
+      if (!rig) return;
+      if (spread === null) return clearParts();
+      if (!parts) {
+        mixer?.stopAllAction();
+        playing = null;
+        restPose();
+        rig.group.updateMatrixWorld(true);
+        parts = buildParts();
+        scene.add(parts.group);
+        rig.group.visible = rig.helper.visible = false;
+      }
+      // A bone moves out by `spread` times its offset from its parent, on top of its parent's move: chains come
+      // apart at every joint.
+      const { heads, parents, items, lines } = parts;
+      const offsets: Vector3[] = [];
+      const offsetOf = (i: number): Vector3 => {
+        if (offsets[i]) return offsets[i];
+        const p = parents[i];
+        return (offsets[i] =
+          p < 0 ? new Vector3() : offsetOf(p).clone().addScaledVector(heads[i].clone().sub(heads[p]), spread * 1.2));
+      };
+      for (const { mesh, bone } of items) mesh.position.copy(bone < 0 ? new Vector3() : offsetOf(bone));
+      const seg: number[] = [];
+      heads.forEach((h, i) => {
+        const p = parents[i];
+        if (p >= 0) seg.push(...h.clone().add(offsetOf(i)).toArray(), ...heads[p].clone().add(offsetOf(p)).toArray());
+      });
+      lines.geometry.setAttribute("position", new Float32BufferAttribute(seg, 3));
+      lines.geometry.computeBoundingSphere();
+      lines.visible = seg.length > 0;
     },
     async exportGlb(clips, extras = {}) {
       if (!rig) throw new Error("Not rigged");
+      clearParts();
       mixer?.stopAllAction();
       restPose();
       rig.group.updateMatrixWorld(true);
-      const skinned = rig.group.children.filter((o): o is SkinnedMesh => (o as SkinnedMesh).isSkinnedMesh);
+      // Blender may split/reorder mesh primitives; its materials cannot be indexed by the original mesh list.
+      const skinned = rig.group.userData.rigProvider === "blender-rigify-template" ? [] : rig.group.children.filter((o): o is SkinnedMesh => (o as SkinnedMesh).isSkinnedMesh);
       skinned.forEach((m, k) => (m.material = materials[k]));
-      rig.group.userData = extras;
+      const metadata = rig.group.userData;
+      rig.group.userData = { ...metadata, ...extras };
       // Hitbox capsules are only a preview: hidden objects are left out of the file.
       capsules.forEach((c) => (c.visible = false));
       try {
         return (await new GLTFExporter().parseAsync(rig.group, { binary: true, animations: clips })) as ArrayBuffer;
       } finally {
-        rig.group.userData = {};
+        rig.group.userData = metadata;
         capsules.forEach((c) => (c.visible = true));
         skinned.forEach((m, k) => (m.material = display[k]));
       }

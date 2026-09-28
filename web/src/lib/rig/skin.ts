@@ -158,7 +158,7 @@ async function heatSkin(m: ModelData, plan: RigPlan, skin: Skin, onProgress?: (p
     for (let j = 0; j < nb; j++) {
       const g = deform[j].b.gate;
       dist[j] =
-        g && q.copy(v).sub(g.origin).dot(g.dir) < 0
+        g && (q.copy(v).sub(g.origin).dot(g.dir) < 0 || g.planes?.some(p => q.copy(v).sub(p.origin).dot(p.dir) < 0))
           ? Infinity
           : v.distanceTo(closestOnSegment(v, deform[j].b.head, deform[j].b.tail, q));
     }
@@ -192,7 +192,7 @@ async function heatSkin(m: ModelData, plan: RigPlan, skin: Skin, onProgress?: (p
     if (!blind[i] && !seen[i * nb + j]) return Infinity;
     vertexAt(m, i, v);
     const g = deform[j].b.gate;
-    if (g && q.copy(v).sub(g.origin).dot(g.dir) < 0) return Infinity;
+    if (g && (q.copy(v).sub(g.origin).dot(g.dir) < 0 || g.planes?.some(p => q.copy(v).sub(p.origin).dot(p.dir) < 0))) return Infinity;
     return v.distanceTo(closestOnSegment(v, deform[j].b.head, deform[j].b.tail, q));
   };
   // A bone deep inside a fat body (the spine of an elephant) has no surface within `reach`: its core starts at its own
@@ -296,7 +296,10 @@ async function heatSkin(m: ModelData, plan: RigPlan, skin: Skin, onProgress?: (p
       const touch = g?.fade === undefined && deform[k].b.gate?.fade === undefined &&
         near[i] <= band && depth[deform[j].i] >= depth[deform[k].i];
       free[i] = allowed[k][j] || touch ? 1 : 0;
+      const reach = deform[j].b.reach;
+      if (reach && !touch && limb[deform[k].i] !== limb[deform[j].i] && (vertexAt(m, i, a).distanceTo(reach.center) > reach.radius || (reach.plane && b.copy(a).sub(reach.plane.origin).dot(reach.plane.dir) < 0))) free[i] = 0;
       if (g?.fade !== undefined && vertexAt(m, i, a).sub(g.origin).dot(g.dir) < -g.fade) free[i] = 0;
+      if (g?.planes?.some(p => vertexAt(m, i, a).sub(p.origin).dot(p.dir) < 0)) free[i] = 0;
       x[i] = nearest[i] === j ? 1 : 0;
       rhs[i] = H[i] * x[i];
     }
@@ -326,6 +329,29 @@ async function heatSkin(m: ModelData, plan: RigPlan, skin: Skin, onProgress?: (p
     }
     onProgress?.((j + 1) / nb);
     await yieldToUi();
+  }
+
+  // Crisp joints: the parent and the child share their weight by the side of the joint plane (halfway between the two
+  // bones' directions) each vertex is on, blended across the joint's thickness. Root first, so an elbow is settled
+  // before the wrist below it.
+  const slot = new Map(deform.map(({ i }, j) => [i, j]));
+  const joints = deform.flatMap(({ b, i }, c) => {
+    const p = slot.get(parent[i]);
+    if (!b.crisp || p === undefined) return [];
+    const up = deform[p].b;
+    const d = up.tail.clone().sub(up.head).normalize().add(b.tail.clone().sub(b.head).normalize()).normalize();
+    const thick = Math.max(m.bvh.closestPointToPoint(b.head)?.distance ?? 0, 0.01 * m.size.y);
+    return [{ p, c, at: b.head, d, thick }];
+  }).sort((x, y) => depth[deform[x.c].i] - depth[deform[y.c].i]);
+  for (let i = 0; i < n; i++) {
+    vertexAt(m, i, v);
+    for (const { p, c, at, d, thick } of joints) {
+      const sum = weights[p * n + i] + weights[c * n + i];
+      if (sum <= 1e-3) continue;
+      const u = smooth(Math.min(1, Math.max(0, q.copy(v).sub(at).dot(d) / (Number(process.env.CRISPW ?? 2) * thick) + 0.5)));
+      weights[p * n + i] = sum * (1 - u);
+      weights[c * n + i] = sum * u;
+    }
   }
 
   for (let i = 0; i < n; i++) {

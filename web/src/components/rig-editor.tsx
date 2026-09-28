@@ -27,11 +27,15 @@ import { toast } from "sonner";
 import { Vector3 } from "three";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { Slider } from "@/components/ui/slider";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { buildClips, type RigClip } from "@/lib/rig/clips";
+import { BLENDER_TEMPLATE_CATEGORIES } from "@/lib/blender/config";
+import { templateRigConfig } from "@/lib/blender/template";
+import { markerLinks } from "@/lib/rig/marker-links";
 import { attackExtras, hitboxExtras } from "@/lib/rig/hitbox";
 import { midDepth, nearestDepth } from "@/lib/rig/model";
 import {
@@ -105,6 +109,11 @@ export function RigEditor({
   const stage = useRef<Stage | null>(null);
   const markers = useRef<Markers>({});
   const markerEls = useRef(new Map<string, HTMLElement>());
+  const linkEls = useRef(new Map<string, SVGLineElement>());
+  const [snapDepth, setSnapDepth] = useState(false);
+  const [coordinateVersion, setCoordinateVersion] = useState(0);
+  const [allowApproximate, setAllowApproximate] = useState(false);
+  const [rigWarnings, setRigWarnings] = useState<string[]>([]);
   const [status, setStatus] = useState<"loading" | "ready" | "failed">("loading");
   const [step, setStep] = useState<Step>("category");
   const [category, setCategory] = useState<RigCategory>("humanoid");
@@ -125,8 +134,11 @@ export function RigEditor({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [playing, setPlaying] = useState<string | null>(null);
   const [showBones, setShowBones] = useState(false);
+  // Rig check: parts cut by bone and pulled apart (null: off).
+  const [parts, setParts] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
-  // AI auto-rig (only offered when a CUDA worker can do it); `auto` = the current rig came from it.
+  // Local Rigify or CUDA SkinTokens; `auto` = the current rig came from that service.
+  const [autoProvider, setAutoProvider] = useState("skintokens");
   const [autoAvailable, setAutoAvailable] = useState(false);
   const [auto, setAuto] = useState(false);
   const [rigMessage, setRigMessage] = useState<string | null>(null);
@@ -135,7 +147,7 @@ export function RigEditor({
     let active = true;
     fetch(`/api/generations/${gen.id}/autorig`)
       .then((r) => (r.ok ? r.json() : { available: false }))
-      .then((d) => active && setAutoAvailable(d.available === true))
+      .then((d) => { if (active) { setAutoAvailable(d.available === true); setAutoProvider(d.provider ?? "skintokens"); } })
       .catch(() => {});
     return () => {
       active = false;
@@ -158,6 +170,14 @@ export function RigEditor({
           const axis = s.viewAxis();
           const v = PRESETS.find((k) => axis.dot(VIEW_AXES[k]) > 0.9995) ?? "free";
           if (v !== shown) setView((shown = v));
+          for (const [key, line] of linkEls.current) {
+            const [from, to] = key.split("|");
+            if (!markers.current[from] || !markers.current[to]) continue;
+            const a = s.project(markers.current[from]);
+            const b = s.project(markers.current[to]);
+            line.setAttribute("x1", String(a.x)); line.setAttribute("y1", String(a.y));
+            line.setAttribute("x2", String(b.x)); line.setAttribute("y2", String(b.y));
+          }
           for (const [id, el] of markerEls.current) {
             const p = markers.current[id];
             if (!p) continue;
@@ -197,6 +217,7 @@ export function RigEditor({
     const next = markerIds(c, o);
     const kept = Object.fromEntries(Object.entries(keep).filter(([id]) => next.ids.includes(id) && !next.derived.has(id)));
     markers.current = syncMirror(c, s.model, { ...guessMarkers(c, s.model, o), ...kept }, o);
+    setActive(null);
     setIds(next);
     if (keepView) s.showMarkers(null);
     else {
@@ -247,7 +268,8 @@ export function RigEditor({
     const rect = mount.current!.getBoundingClientRect();
     const move = (ev: PointerEvent) => {
       const p = s.unproject(ev.clientX - rect.left, ev.clientY - rect.top, markers.current[id]);
-      markers.current = syncMirror(category, s.model, { ...markers.current, [id]: (id.startsWith("wing") ? nearestDepth : midDepth)(s.model, p, s.viewAxis()) }, options);
+      markers.current = syncMirror(category, s.model, { ...markers.current, [id]: snapDepth ? (id.startsWith("wing") ? nearestDepth : midDepth)(s.model, p, s.viewAxis()) : p }, options);
+      setCoordinateVersion(v => v + 1);
       refreshPreview();
     };
     const up = () => {
@@ -263,19 +285,33 @@ export function RigEditor({
   async function autoRig() {
     const s = stage.current!;
     const api = `/api/generations/${gen.id}/autorig`;
+    const fromMarkers = step === "markers" && autoProvider === "blender";
     setStep("rigging");
     setRigMessage(tr.autoStarting);
+    setRigWarnings([]);
     try {
-      const res = await fetch(api, { method: "POST" });
+      const presetPlan = fromMarkers ? planRig(category, s.model, markers.current, options) : null;
+      const config = presetPlan ? templateRigConfig(presetPlan, species?.id ?? null) : { preset: "humanoid", forward: options.flip ? "-Z" : "+Z" };
+      Object.assign(config, { weightFallback: allowApproximate ? "nearest" : "error" });
+      const res = await fetch(api, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(config) });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error ?? t.common.requestFailed(res.status));
       const job = encodeURIComponent(data.job);
+      const deadline = Date.now() + 4.5 * 60 * 60 * 1000; // max queue: 8 jobs, at most 30 minutes each
       for (;;) {
+        if (Date.now() > deadline) throw new Error(tr.autoFailed);
         await new Promise((r) => setTimeout(r, 3000));
         if (stage.current !== s) return; // editor closed
-        const st = await fetch(`${api}?job=${job}`).then((r) => r.json());
+        const st = await fetch(`${api}?job=${job}`).then(async (r) => {
+          if (!r.ok) throw new Error(t.common.requestFailed(r.status));
+          return r.json();
+        });
         if (st.status === "failed" || st.error) throw new Error(st.error ?? tr.autoFailed);
-        if (st.status === "completed") break;
+        if (st.status === "completed") {
+          setRigWarnings(st.warnings ?? []);
+          for (const warning of st.warnings ?? []) toast.warning(warning);
+          break;
+        }
         setRigMessage(st.message ?? tr.autoStarting);
       }
       const glb = await fetch(`${api}?job=${job}&model`).then((r) => {
@@ -283,18 +319,24 @@ export function RigEditor({
         return r.arrayBuffer();
       });
       if (stage.current !== s) return;
-      const predicted = (plan.current = autoRigPlan(s.model));
-      await s.applyAutoRig(glb, predicted);
+      const predicted = (plan.current = presetPlan ?? autoRigPlan(s.model));
+      if (presetPlan) await s.applyBlenderTemplate(glb, presetPlan);
+      else await s.applyAutoRig(glb, predicted);
       s.setShowBones(showBones);
       const built = buildClips(predicted);
-      setAuto(true);
+      setAuto(!presetPlan);
+      setParts(null);
       setClips(built);
-      setSelected(new Set(built.map((c) => c.clip.name)));
+      const need = presetPlan && species && new Set(requiredClips(species));
+      setSelected(new Set(built.filter(c => !need || need.has(c.clip.name)).map(c => c.clip.name)));
+      if (presetPlan && hitbox) s.setHitboxes(hitboxesOf(built));
       setStep("animate");
-      play(built[0] ?? null);
+      play(null); // Inspect the rest pose before deliberately playing a deformation.
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : tr.autoFailed);
-      setStep("category");
+      const message = e instanceof Error ? e.message : tr.autoFailed;
+      toast.error(message);
+      setRigWarnings([message]);
+      setStep(fromMarkers ? "markers" : "category");
     } finally {
       setRigMessage(null);
     }
@@ -309,6 +351,7 @@ export function RigEditor({
     const skin = await computeSkin(s.model, planned, setProgress);
     s.applyRig(planned, skin);
     s.setShowBones(showBones);
+    setParts(null);
     const built = buildClips(planned);
     setClips(built);
     // A preset starts with the clips its species needs, otherwise all of them.
@@ -319,14 +362,21 @@ export function RigEditor({
     play(built[0] ?? null);
   }
 
+  function showParts(spread: number | null) {
+    setParts(spread);
+    stage.current?.setParts(spread);
+  }
+
   function play(c: RigClip | null) {
+    if (c && parts !== null) showParts(null);
     stage.current?.play(c?.clip ?? null, c?.attack);
     setPlaying(c?.clip.name ?? null);
   }
 
   function adjust() {
     play(null);
-    if (auto) return setStep("category");
+    setParts(null);
+    if (auto) return chooseCategory(category, species);
     setStep("markers");
     stage.current?.showMarkers(null);
     refreshPreview();
@@ -336,6 +386,7 @@ export function RigEditor({
     const s = stage.current;
     if (!s) return;
     setSaving(true);
+    if (parts !== null) showParts(null);
     try {
       const chosen = clips.filter((c) => selected.has(c.clip.name));
       const withHitboxes = hitbox && !auto && plan.current;
@@ -382,6 +433,15 @@ export function RigEditor({
         <div ref={mount} className="absolute inset-0" />
         {step === "markers" ? (
           <div className="pointer-events-none absolute inset-0 overflow-hidden">
+            <svg className="absolute inset-0 h-full w-full overflow-visible" aria-label={tr.jointLinks}>
+              {markerLinks(category, ids.ids).map(([from, to]) => {
+                const key = `${from}|${to}`;
+                return <line key={key} ref={el => { if (el) linkEls.current.set(key, el); else linkEls.current.delete(key); }}
+                  stroke={markerColor(sideOf(to) ? to : from)} strokeWidth={active === from || active === to ? 4 : 2.5}
+                  strokeOpacity={0.85} strokeDasharray={sideOf(to) === "R" ? "6 3" : undefined}
+                  style={{ filter: "drop-shadow(0 0 1px white)" }} />;
+              })}
+            </svg>
             {ids.ids.map((id) => {
               const off = locked(id);
               const on = id === active;
@@ -464,17 +524,21 @@ export function RigEditor({
         </div>
 
         <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-1 pb-1 [&>*]:shrink-0">
-          {step === "category" && autoAvailable ? (
+          {rigWarnings.length ? <div role="status" className="rounded-xl border border-amber-400/50 bg-amber-50 p-3 text-xs text-amber-950">
+            <p className="font-semibold">{tr.rigReview}</p>
+            {rigWarnings.map((warning, i) => <p key={i} className="mt-1">{warning}</p>)}
+          </div> : null}
+          {step === "category" && autoAvailable && (autoProvider !== "blender" || category === "humanoid") ? (
             <button
               type="button"
               disabled={!ready}
-              onClick={autoRig}
+              onClick={autoProvider === "blender" ? () => chooseCategory("humanoid") : autoRig}
               className="flex items-start gap-3 rounded-2xl bg-primary/10 p-3 text-left ring-1 ring-primary/30 transition-all hover:ring-primary/60 disabled:opacity-40"
             >
               <SparklesIcon className="mt-0.5 size-5 shrink-0 text-primary" />
               <span className="flex flex-col gap-0.5">
-                <span className="text-[13px] leading-tight font-semibold">{tr.autoTitle}</span>
-                <span className="text-[11px] leading-tight text-muted-foreground">{tr.autoHint}</span>
+                <span className="text-[13px] leading-tight font-semibold">{autoProvider === "blender" ? "Auto Rig · Blender Rigify" : tr.autoTitle}</span>
+                <span className="text-[11px] leading-tight text-muted-foreground">{autoProvider === "blender" ? tr.blenderChooseHint : tr.autoHint}</span>
               </span>
             </button>
           ) : null}
@@ -525,6 +589,33 @@ export function RigEditor({
 
           {step === "markers" ? (
             <>
+              <p className="px-1 text-xs text-muted-foreground">{tr.markerEditHint}</p>
+              <label className="flex items-center justify-between gap-2 rounded-xl bg-card p-3 text-xs">
+                {tr.snapDepth}
+                <Switch checked={snapDepth} onCheckedChange={setSnapDepth} />
+              </label>
+              {autoProvider === "blender" ? <label className="flex items-center justify-between gap-2 rounded-xl bg-card p-3 text-xs">
+                <span>{tr.approximateWeights}<span className="mt-1 block text-muted-foreground">{tr.approximateHint}</span></span>
+                <Switch checked={allowApproximate} onCheckedChange={setAllowApproximate} />
+              </label> : null}
+              {active && markers.current[active] ? <fieldset className="rounded-xl bg-card p-3">
+                <legend className="px-1 text-xs font-semibold">{label(active)}</legend>
+                <div className="grid grid-cols-3 gap-2">
+                  {(["x", "y", "z"] as const).map(axis => <label key={axis} className="text-xs uppercase">{axis}
+                    <input key={`${active}-${axis}-${coordinateVersion}`} type="number" step="0.01" disabled={locked(active)}
+                      aria-label={`${label(active)} ${axis.toUpperCase()}`} defaultValue={Number(markers.current[active][axis].toFixed(4))}
+                      className="mt-1 w-full rounded-md border border-input bg-background p-1.5 text-sm disabled:opacity-50"
+                      onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                      onBlur={e => {
+                        const value = e.currentTarget.valueAsNumber;
+                        if (!Number.isFinite(value) || !stage.current) return;
+                        const point = markers.current[active].clone(); point[axis] = value;
+                        markers.current = syncMirror(category, stage.current.model, { ...markers.current, [active]: point }, options);
+                        refreshPreview(); setCoordinateVersion(v => v + 1);
+                      }} />
+                  </label>)}
+                </div>
+              </fieldset> : null}
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="px-1 text-[13px] font-semibold text-muted-foreground">{tr.view}</span>
                 <Tabs value={view} onValueChange={(v) => changeView(v as Exclude<View, "free">)}>
@@ -785,6 +876,27 @@ export function RigEditor({
                   }}
                 />
               </label>
+              <div className="flex flex-col gap-2.5 rounded-2xl bg-card px-3.5 py-2.5 ring-1 ring-black/5">
+                <label className="flex cursor-pointer items-center justify-between gap-3 text-sm font-medium">
+                  <span className="flex flex-col gap-0.5">
+                    {tr.parts}
+                    <span className="text-[11px] leading-tight font-normal text-muted-foreground">{tr.partsHint}</span>
+                  </span>
+                  <Switch
+                    checked={parts !== null}
+                    onCheckedChange={(v) => {
+                      if (v) setPlaying(null);
+                      showParts(v ? 0.5 : null);
+                    }}
+                  />
+                </label>
+                {parts !== null ? (
+                  <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                    {tr.partsSpread}
+                    <Slider min={0} max={1} step={0.05} value={[parts]} onValueChange={([v]) => showParts(v)} className="flex-1" />
+                  </div>
+                ) : null}
+              </div>
               {auto ? null : (
                 <label className="flex cursor-pointer items-center justify-between gap-3 rounded-2xl bg-card px-3.5 py-2.5 text-sm font-medium ring-1 ring-black/5">
                   <span className="flex flex-col gap-0.5">
@@ -849,20 +961,28 @@ export function RigEditor({
         </div>
 
         {step === "markers" ? (
-          <div className="flex shrink-0 gap-2">
-            <Button
-              variant="outline"
-              onClick={() => {
-                stage.current?.setPreview(null);
-                setStep("category");
-              }}
-            >
-              <ChevronLeftIcon />
-              {tr.back}
-            </Button>
-            <Button className="flex-1" onClick={rig}>
-              {tr.rig}
-            </Button>
+          <div className="flex shrink-0 flex-col gap-2">
+            {autoAvailable && autoProvider === "blender" && BLENDER_TEMPLATE_CATEGORIES.some(c => c === category) ? (
+              <Button variant="outline" onClick={autoRig} title={tr.blenderPresetHint}>
+                <SparklesIcon />
+                {tr.blenderPreset}
+              </Button>
+            ) : null}
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  stage.current?.setPreview(null);
+                  setStep("category");
+                }}
+              >
+                <ChevronLeftIcon />
+                {tr.back}
+              </Button>
+              <Button className="flex-1" onClick={rig}>
+                {tr.rig}
+              </Button>
+            </div>
           </div>
         ) : step === "animate" ? (
           <div className="flex shrink-0 gap-2">

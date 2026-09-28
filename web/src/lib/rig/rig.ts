@@ -27,6 +27,8 @@ export type RigOptions = {
   wings: boolean;
   /** Walks on the hind legs, the front limbs are arms, e.g. a carnivorous dinosaur (animals). */
   bipedal: boolean;
+  /** Five editable neck links and a long tail, for sauropods. */
+  longNeck: boolean;
   /** Four short legs along the body, e.g. an Asian dragon (serpents). */
   legs: boolean;
   /** Pair of pectoral fins with three joints each: a fish's or a dolphin's fins, a manta ray's wings (sea life). */
@@ -52,6 +54,7 @@ export const DEFAULT_RIG_OPTIONS: RigOptions = {
   horns: 0,
   wings: false,
   bipedal: false,
+  longNeck: false,
   legs: false,
   fins: false,
   swim: "fish",
@@ -93,7 +96,18 @@ export type BoneSpec = {
    * the bone has no weight at all beyond that distance behind the plane, and mixes only with its parent among the
    * trunk bones: a flapping wing then leaves the head, the midline and the other wing alone.
    */
-  gate?: { origin: Vector3; dir: Vector3; fade?: number };
+  gate?: { origin: Vector3; dir: Vector3; fade?: number; planes?: { origin: Vector3; dir: Vector3 }[] };
+  /**
+   * Heat skinning: a limb bone takes no weight on the body (vertices of other bones' regions) farther than `radius`
+   * from `center` (its limb's root joint), except where the limb touches the body. Otherwise an arm's weight diffuses
+   * across the back to the midline, and lowering both arms pulls the spine skin both ways.
+   */
+  reach?: { center: Vector3; radius: number; plane?: { origin: Vector3; dir: Vector3 } };
+  /**
+   * Heat skinning: blends with its parent only across the joint's thickness (an elbow, a knee). Heat alone spreads
+   * the blend along the whole limb, and a bent elbow then caves in the upper arm.
+   */
+  crisp?: boolean;
   /** Rigid part (a weapon): vertices that take it as their nearest bone follow only it, so it never bends. */
   rigid?: boolean;
   /** Part of the bone that deals damage (fractions head -> tail), for its hitbox. Default: all of it. */
@@ -553,12 +567,12 @@ const humanoid: Template = {
     // thin band far wider than the body, with the head above it. The neck is above that band (the waist below it
     // would otherwise pass for one), at its top when the head sits right on the shoulders.
     const median = [...widths].sort((a, b) => a - b)[widths.length >> 1];
-    let armTop = -1;
+    let [armTop, armBottom] = [-1, -1];
     for (let i = widths.length - 1; i >= 0; i--) {
       if (widths[i] <= 2 * median) continue;
       let bottom = i;
       while (bottom > 0 && widths[bottom - 1] > 2 * median) bottom--;
-      if (ys[i] - ys[bottom] < 0.15 * h && ys[ys.length - 1] - ys[i] > 0.05 * h) armTop = i;
+      if (ys[i] - ys[bottom] < 0.15 * h && ys[ys.length - 1] - ys[i] > 0.05 * h) [armTop, armBottom] = [i, bottom];
       break;
     }
     let neckY = NaN;
@@ -580,7 +594,13 @@ const humanoid: Template = {
         }
       }
     }
-    const halfChest = Math.min(across(neckY - 0.08 * h).half, 0.3 * h);
+    // Chest width: rows through T-pose arms measure the whole arm span (a chibi's chest is all arm band), so there it's
+    // the torso just below the arms.
+    const chestY = neckY - 0.08 * h;
+    const below = armTop >= 0 && chestY <= ys[armTop] + 0.005 * h
+      ? widths.filter((_, i) => i < armBottom && ys[i] >= ys[armBottom] - 0.1 * h).sort((a, b) => a - b)
+      : [];
+    const halfChest = Math.min(below.length ? below[below.length >> 1] : across(chestY).half, 0.3 * h);
     const bodyZ = across(neckY - 0.08 * h).c.z;
     const shoulderL = new Vector3(cx + halfChest * 0.85, neckY - 0.035 * h, o.wings ? bodyZ : m.center.z);
     const armSurface = (v: Vector3) => !o.wings || (v.z - bodyZ) * fr.forward.z > -0.04 * h;
@@ -675,8 +695,22 @@ const humanoid: Template = {
       bone("Neck", "Chest", neck, k.chin),
       bone("Head", "Neck", k.chin, headTop),
     ];
-    if (o.wings) for (const [s] of SIDES)
-      bones.push(...wingBones(k, s, "Chest", k[`wingRoot${s}`], { at: chest, lateral: fr.lateral }));
+    if (o.wings) for (const [s, side] of SIDES) {
+      const root = k[`wingRoot${s}`];
+      const wing = wingBones(k, s, "Chest", root, { at: chest, lateral: fr.lateral });
+      const out = fr.lateral.clone().multiplyScalar(side === "Left" ? 1 : -1);
+      const depth = shoulderMid.clone().sub(root).dot(fr.forward);
+      if (depth > 0.01 * h) {
+        // Separate the back layer near the body, then open the region outward so
+        // curved feather fans may sweep forward beyond the arms. A side-only
+        // gate lets broad hair and shoulder vertices attach to the wing.
+        const width = Math.max(Math.abs(k[`shoulder${s}`].clone().sub(shoulderMid).dot(out)), 0.05 * h);
+        const origin = shoulderMid.clone().addScaledVector(out, 1.8 * width).addScaledVector(fr.forward, -depth * 0.5);
+        const dir = out.clone().multiplyScalar(depth / Math.max(width * 2.4, 1e-6)).sub(fr.forward).normalize();
+        for (const b of wing) b.gate!.planes = [{ origin, dir }];
+      }
+      bones.push(...wing);
+    }
     if (k.tailTip) {
       const base = lerp(hips, k.tailTip, 0.3);
       const joints = [0, 1 / 3, 2 / 3, 1].map((t) => lerp(base, k.tailTip, t));
@@ -688,15 +722,38 @@ const humanoid: Template = {
       const [shoulder, elbow, wrist, knee, ankle] = ["shoulder", "elbow", "wrist", "knee", "ankle"].map((j) => k[j + s]);
       const hip = new Vector3(knee.x, k.groin.y + 0.01 * h, hips.z);
       const toe = ankle.clone().addScaledVector(fr.forward, 0.07 * h).setY(m.box.min.y);
-      const arm = (b: BoneSpec) => gated(b, shoulder, elbow);
-      const leg = (b: BoneSpec) => gated(b, hip, knee);
+      // A shoulder→elbow plane points down for relaxed arms and admits the whole
+      // abdomen. Use an outward plane in that pose, with a small shoulder blend
+      // band and explicit fade to disable diffusion through arm/hip contacts.
+      // Keep the original gate for raised/crossed arms and winged characters:
+      // their overlapping back layer needs the existing visibility partition.
+      const outward = fr.lateral.clone().multiplyScalar(S === "Left" ? 1 : -1);
+      const halfShoulders = shoulder.clone().sub(shoulderMid).dot(outward);
+      const lowered = !o.wings && shoulder.y - elbow.y > Math.abs(elbow.clone().sub(shoulder).dot(outward)) &&
+        halfShoulders > 1e-6 && [elbow, wrist].every(p => p.clone().sub(shoulderMid).dot(outward) >= 0.75 * halfShoulders);
+      const limb = (b: BoneSpec): BoneSpec => lowered
+        ? { ...b, gate: {
+          origin: shoulder.clone().addScaledVector(outward, -0.2 * halfShoulders),
+          dir: outward.clone(), fade: 0.1 * halfShoulders,
+        } }
+        : gated(b, shoulder, elbow);
+      // Limbs weigh the body only around their root joint, never as far as the midline.
+      const K = Number(process.env.REACHK ?? 1.3), M = Number(process.env.REACHM ?? 0.2);
+      const side = (c: Vector3, half: number) => ({ center: c, radius: K * Math.max(half, 0.02 * h), ...(M >= 0 ? { plane: { origin: c.clone().addScaledVector(outward, -(1 - M) * half), dir: outward.clone() } } : {}) });
+      const armReach = side(shoulder, halfShoulders);
+      const legReach = side(hip, Math.abs(hip.clone().sub(hips).dot(outward)));
+      const arm = (b: BoneSpec): BoneSpec => ({ ...limb(b), reach: armReach });
+      const leg = (b: BoneSpec): BoneSpec => ({ ...gated(b, hip, knee), reach: legReach });
+      // Collarbone: shrugs when the arm goes up (see the clips), so the top of the shoulder rises with it instead of
+      // the armpit and the trapezius stretching. Not with wings: it would take the wing roots' feathers.
+      if (!o.wings) bones.push(bone(`${S}Shoulder`, "Chest", lerp(shoulderMid, shoulder, 0.2).setY(shoulder.y), shoulder));
       bones.push(
-        arm(bone(`${S}UpperArm`, "Chest", shoulder, elbow)),
-        arm(bone(`${S}LowerArm`, `${S}UpperArm`, elbow, wrist)),
-        arm(bone(`${S}Hand`, `${S}LowerArm`, wrist, wrist.clone().add(wrist.clone().sub(elbow).multiplyScalar(0.35)))),
+        arm(bone(`${S}UpperArm`, o.wings ? "Chest" : `${S}Shoulder`, shoulder, elbow)),
+        { ...arm(bone(`${S}LowerArm`, `${S}UpperArm`, elbow, wrist)), crisp: true },
+        { ...arm(bone(`${S}Hand`, `${S}LowerArm`, wrist, wrist.clone().add(wrist.clone().sub(elbow).multiplyScalar(0.35)))), crisp: true },
         leg(bone(`${S}UpperLeg`, "Hips", hip, knee)),
-        leg(bone(`${S}LowerLeg`, `${S}UpperLeg`, knee, ankle)),
-        leg(bone(`${S}Foot`, `${S}LowerLeg`, ankle, toe)),
+        { ...leg(bone(`${S}LowerLeg`, `${S}UpperLeg`, knee, ankle)), crisp: true },
+        { ...leg(bone(`${S}Foot`, `${S}LowerLeg`, ankle, toe)), crisp: true },
       );
       // A held weapon hangs off the hand: it moves with the wrist and never bends.
       const kind = weaponOf(o, S);
@@ -754,6 +811,8 @@ function legJoin(m: ModelData, fr: Frame, foot: Vector3, midLat: number, max: nu
   return Math.min(y, max);
 }
 
+export const LONG_NECK_MARKERS = ["neckBase", "neckLower", "neckMid", "neckUpper", "neckTop"] as const;
+
 const quadruped: Template = {
   markers: (o) => [
     "nose",
@@ -762,6 +821,7 @@ const quadruped: Template = {
     ...(o.jaw ? ["jawTip"] : []),
     ...(o.horns === 1 ? ["hornTip"] : o.horns >= 2 ? ["hornTipL", "hornTipR"] : []),
     "shoulders",
+    ...(o.longNeck ? LONG_NECK_MARKERS : []),
     "back",
     "hips",
     "belly",
@@ -819,12 +879,21 @@ const quadruped: Template = {
     if (o.bipedal) front = rear + 0.45 * (nose.dot(F) - rear);
     const shoulders = torso(front);
     const hips = torso(rear);
+    // A vertical neck above the front feet must not be mistaken for the torso's back.
+    if (o.longNeck) shoulders.y = Math.min(shoulders.y, hips.y + 0.08 * h);
     // Skull center: a little behind the nose, halfway between the nose and the top of the head.
     const headS = lerp(nose, shoulders, o.trunk ? 0.45 : 0.2).dot(F);
     const skullTop =
       raycastAll(m, at(fr, headS, latC, m.box.max.y + h), UP.clone().negate()).find((hit) => hit.face && solid(hit.face.a))
         ?.point.y ?? nose.y;
     const head = midDepth(m, at(fr, headS, latC, (Math.max(skullTop, nose.y) + nose.y) / 2), L);
+    if (o.longNeck) {
+      const skull = centroid(m, (p) => p.y > minY + 0.88 * h);
+      if (skull) {
+        head.copy(skull).addScaledVector(L, latC - skull.dot(L));
+        nose.copy(midDepth(m, extreme(m, (p) => p.dot(F), (p) => p.y > minY + 0.88 * h), L));
+      }
+    }
     // Belly: low in the torso between the leg pairs, above the underside seen from below.
     const midS = (front + rear) / 2;
     const footY = minY + 0.03 * h;
@@ -840,6 +909,15 @@ const quadruped: Template = {
       rearFootL: at(fr, rear, footLat(rear), footY),
       rearKneeL: at(fr, rear, footLat(rear), footY + 0.45 * (hips.y - footY)),
     };
+    if (o.longNeck) {
+      LONG_NECK_MARKERS.forEach((id, i) => {
+        const point = lerp(shoulders, head, 0.12 + i * 0.176);
+        // Follow the silhouette at each height; sparse slices retain the interpolated estimate.
+        const slice = centroid(m, (p) => Math.abs(p.y - point.y) < 0.035 * h && p.dot(F) >= shoulders.dot(F));
+        if (slice) point.addScaledVector(F, slice.dot(F) - point.dot(F));
+        k[id] = point;
+      });
+    }
     if (o.bipedal) {
       // Short arms hanging under the chest.
       const drop = shoulders.y - minY;
@@ -881,7 +959,7 @@ const quadruped: Template = {
     const h = m.size.y;
     const { forward: F, lateral: L } = fr;
     const len = range(m, F).len;
-    const neck = lerp(k.shoulders, k.head, 0.45);
+    const neck = o.longNeck ? k.neckBase : lerp(k.shoulders, k.head, 0.45);
     // A long neck (horses, dragons, dinosaurs) gets two links so it curves instead of kinking at one joint.
     const neck2 = k.head.distanceTo(k.shoulders) > 0.3 * len ? lerp(neck, k.head, 0.5) : null;
     // Belly: a bone low in the torso that holds the underside, so the upper legs don't pull it along when they swing.
@@ -897,22 +975,24 @@ const quadruped: Template = {
         break;
       }
     // Long tails (crocodiles, dinosaurs, dragons) get five links, so a swipe bends smoothly.
-    const links = k.tailTip.distanceTo(k.hips) * (1 - tb) > 0.25 * len ? 5 : 3;
+    const links = o.longNeck || k.tailTip.distanceTo(k.hips) * (1 - tb) > 0.25 * len ? 5 : 3;
     const tail = Array.from({ length: links + 1 }, (_, i) => lerp(k.hips, k.tailTip, tb + (i / links) * (1 - tb)));
+    const neckPoints = o.longNeck ? [...LONG_NECK_MARKERS.map(id => k[id]), k.head] : neck2 ? [neck, neck2, k.head] : [neck, k.head];
+    const neckBones = neckPoints.slice(0, -1).map((point, i) =>
+      bone(i ? `Neck${i + 1}` : "Neck", i ? (i === 1 ? "Neck" : `Neck${i}`) : "Chest", point, neckPoints[i + 1]),
+    );
     const bones = [
       bone("Root", null, ground(m, k.back), k.hips, false),
       bone("Hips", "Root", k.hips, k.back),
       bone("Spine", "Hips", k.back, k.shoulders),
       bone("Chest", "Spine", k.shoulders, neck),
-      ...(neck2
-        ? [bone("Neck", "Chest", neck, neck2), bone("Neck2", "Neck", neck2, k.head)]
-        : [bone("Neck", "Chest", neck, k.head)]),
+      ...neckBones,
       bone("Belly", "Spine", k.belly.clone().addScaledVector(F, -bellyHalf), k.belly.clone().addScaledVector(F, bellyHalf)),
       ...Array.from({ length: links }, (_, i) =>
         gated(bone(`Tail${i + 1}`, i ? `Tail${i}` : "Hips", tail[i], tail[i + 1]), tail[0], k.tailTip),
       ),
     ];
-    const headParent = neck2 ? "Neck2" : "Neck";
+    const headParent = neckBones.at(-1)!.name;
     let upperLip = k.nose;
     if (k.trunkMid) {
       // Trunk: the head ends where the trunk starts, then three links through the middle marker to the tip.

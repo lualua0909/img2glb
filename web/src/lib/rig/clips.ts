@@ -460,6 +460,27 @@ type Side = "Left" | "Right";
 
 function humanoid(k: Kit): RigClip[] {
   const { r, F, L, U, H, pitch, roll, yaw } = k;
+  /**
+   * Collarbones follow the arms: an arm raised above the horizontal lifts its shoulder by up to ~25° (as a shoulder
+   * blade does), without changing where the arm points. Arms at the sides leave them at rest.
+   */
+  const shrug = (P: Poser) => {
+    for (const side of ["Left", "Right"] as const) {
+      const [collar, arm] = [`${side}Shoulder`, `${side}UpperArm`];
+      if (!P.has(collar)) continue;
+      const lift = Math.min(0.45, 0.3 * Math.max(0, Math.asin(Math.max(-1, Math.min(1, P.dir(arm).dot(U)))) + 0.2));
+      const axis = new Vector3().crossVectors(P.dir(collar), U);
+      if (lift <= 0 || axis.lengthSq() < 1e-8) continue;
+      axis.normalize();
+      P.rot(collar, axis, lift);
+      P.rot(arm, axis, -lift);
+    }
+  };
+  const clip: Kit["clip"] = (movement, name, duration, pose, mirror) =>
+    k.clip(movement, name, duration, (t, P, ph) => {
+      pose(t, P, ph);
+      shrug(P);
+    }, mirror);
   // Rest arm angle in the frontal plane: 0 = T-pose, -90° = hanging. Motions start from arms ~15° off the body.
   const armAngle = (side: "Left" | "Right") => {
     const d = r.restDir[r.index.get(`${side}UpperArm`)!];
@@ -564,7 +585,7 @@ function humanoid(k: Kit): RigClip[] {
   const out = L.clone().negate();
   // Right hand: sword, axe, hammer, spear, guns.
   const slash = (mirror = false) =>
-    k.clip("13", "Attack_Slash", 1.3, (t, P) => {
+    clip("13", "Attack_Slash", 1.3, (t, P) => {
       const raise = keys(t, [[0, 0], [0.35, 1], [0.5, 0.3], [0.62, 0]]);
       const swing = keys(t, [[0.35, 0], [0.55, 1], [0.8, 1], [1.25, 0]]);
       P.move("Hips", k.up(-0.04 * H * swing).add(k.fwd(0.03 * H * swing)));
@@ -583,7 +604,7 @@ function humanoid(k: Kit): RigClip[] {
       legs(P, "Right", 0.3 * swing, 0.1 * swing);
     }, mirror);
   const sweep = (mirror = false) =>
-    k.clip("13", "Attack_Sweep", 1.2, (t, P) => {
+    clip("13", "Attack_Sweep", 1.2, (t, P) => {
       const load = keys(t, [[0, 0], [0.35, 1], [0.5, 0]]);
       const swing = keys(t, [[0.35, 0], [0.52, 1], [0.8, 1], [1.15, 0]]);
       const stance = keys(t, [[0, 0], [0.3, 1], [0.85, 1], [1.15, 0]]);
@@ -602,7 +623,7 @@ function humanoid(k: Kit): RigClip[] {
       legs(P, "Right", 0.25 * stance, 0.15 * stance);
     }, mirror);
   const thrust = (mirror = false) =>
-    k.clip("13", "Attack_Thrust", 1, (t, P) => {
+    clip("13", "Attack_Thrust", 1, (t, P) => {
       const load = keys(t, [[0, 0], [0.3, 1], [0.4, 0]]);
       const hit = keys(t, [[0.3, 0], [0.42, 1], [0.6, 1], [0.95, 0]]);
       const stance = keys(t, [[0, 0], [0.25, 1], [0.7, 1], [0.95, 0]]);
@@ -620,7 +641,7 @@ function humanoid(k: Kit): RigClip[] {
     }, mirror);
   // One-handed overhead smash (hammer, axe): raised above the head, then brought down in front.
   const smash = (mirror = false) =>
-    k.clip("13", "Attack_Smash", 1.4, (t, P) => {
+    clip("13", "Attack_Smash", 1.4, (t, P) => {
       const raise = keys(t, [[0, 0], [0.45, 1], [0.6, 0]]);
       const slam = keys(t, [[0.45, 0], [0.62, 1], [0.95, 1], [1.35, 0]]);
       P.move("Hips", k.up(0.02 * H * raise - 0.07 * H * slam));
@@ -638,7 +659,7 @@ function humanoid(k: Kit): RigClip[] {
     }, mirror);
   // Two-handed hammer: raised high overhead, then slammed down to the ground in a crouch.
   const hammer = (mirror = false) =>
-    k.clip("13", "Attack_Hammer", 1.6, (t, P) => {
+    clip("13", "Attack_Hammer", 1.6, (t, P) => {
       const raise = keys(t, [[0, 0], [0.5, 1], [0.66, 0]]);
       const slam = keys(t, [[0.5, 0], [0.68, 1], [1.05, 1], [1.55, 0]]);
       P.move("Hips", k.up(0.02 * H * raise - 0.08 * H * slam));
@@ -673,13 +694,13 @@ function humanoid(k: Kit): RigClip[] {
   /** Recoil pulse per shot at `shots` times. */
   const recoil = (t: number, shots: number[]) => shots.reduce((a, s) => a + (t >= s ? Math.exp(-18 * (t - s)) : 0), 0);
   const aimLong = (name: string, mirror = false) =>
-    k.clip("15", `Aim_${name}`, 3, (_t, P, ph) => {
+    clip("15", `Aim_${name}`, 3, (_t, P, ph) => {
       shoulder(P, 1);
       P.move("Hips", k.up(-0.004 * H * (1 - Math.cos(ph))));
       pitch(P, "Chest", 0.015 * Math.sin(ph));
     }, mirror);
   const shootLong = (name: string, shots: number[], mirror = false) =>
-    k.clip("15", `Shoot_${name}`, 1, (t, P) => {
+    clip("15", `Shoot_${name}`, 1, (t, P) => {
       const kick = recoil(t, shots);
       shoulder(P, 1);
       pitch(P, "Chest", -0.1 * kick);
@@ -688,7 +709,7 @@ function humanoid(k: Kit): RigClip[] {
       pitch(P, "Head", -0.04 * kick);
     }, mirror);
   const pistol = (mirror = false) =>
-    k.clip("15", "Shoot_Pistol", 1.2, (t, P) => {
+    clip("15", "Shoot_Pistol", 1.2, (t, P) => {
       const e = keys(t, [[0, 0], [0.2, 1], [0.95, 1], [1.2, 0]]);
       const kick = recoil(t, [0.35, 0.7]);
       armsDown(P);
@@ -704,7 +725,7 @@ function humanoid(k: Kit): RigClip[] {
       legs(P, "Right", 0.1 * e, 0.1 * e);
     }, mirror);
   const reload = (mirror = false) =>
-    k.clip("15", "Reload", 2, (t, P) => {
+    clip("15", "Reload", 2, (t, P) => {
       // Gun lowered and tilted, left hand drops to the belt for a magazine and slaps it in.
       const down = keys(t, [[0, 0], [0.3, 1], [1.6, 1], [1.9, 0]]);
       const reach = keys(t, [[0.3, 0], [0.7, 1], [1.0, 1], [1.35, 0]]);
@@ -726,7 +747,7 @@ function humanoid(k: Kit): RigClip[] {
     point(P, "Left", up(P, "Left").addScaledVector(F, 0.15), e);
   };
   const block = (mirror = false) =>
-    k.clip("13", "Block", 1.6, (t, P) => {
+    clip("13", "Block", 1.6, (t, P) => {
       const e = keys(t, [[0, 0], [0.2, 1], [1.3, 1], [1.6, 0]]);
       P.move("Hips", k.up(-0.04 * H * e));
       pitch(P, "Spine", 0.1 * e);
@@ -737,7 +758,7 @@ function humanoid(k: Kit): RigClip[] {
       legs(P, "Right", 0.3 * e, 0.15 * e);
     }, mirror);
   const bash = (mirror = false) =>
-    k.clip("13", "Attack_ShieldBash", 1.1, (t, P) => {
+    clip("13", "Attack_ShieldBash", 1.1, (t, P) => {
       const load = keys(t, [[0, 0], [0.3, 1], [0.4, 0]]);
       const hit = keys(t, [[0.3, 0], [0.42, 1], [0.65, 1], [1.05, 0]]);
       const e = keys(t, [[0, 0], [0.2, 1], [0.8, 1], [1.05, 0]]);
@@ -768,7 +789,7 @@ function humanoid(k: Kit): RigClip[] {
     legs(P, "Right", 0.1 * e, 0.1 * e);
   };
   const aimBow = (mirror = false) =>
-    k.clip("15", "Aim_Bow", 3, (_t, P, ph) => {
+    clip("15", "Aim_Bow", 3, (_t, P, ph) => {
       bowPose(P, 1, 1);
       P.move("Hips", k.up(-0.004 * H * (1 - Math.cos(ph))));
       pitch(P, "Chest", 0.015 * Math.sin(ph));
@@ -776,7 +797,7 @@ function humanoid(k: Kit): RigClip[] {
   // Nock, draw, hold, release at 0.8 s (the drawing hand flies back), lower.
   const BOW_RELEASE = 0.8;
   const shootBow = (mirror = false) =>
-    k.clip("15", "Shoot_Bow", 1.5, (t, P) => {
+    clip("15", "Shoot_Bow", 1.5, (t, P) => {
       const e = keys(t, [[0, 0], [0.25, 1], [1.2, 1], [1.5, 0]]);
       const draw = keys(t, [[0.25, 0], [0.65, 1], [BOW_RELEASE, 1], [BOW_RELEASE + 0.06, 1.2], [1.2, 0.8]]);
       bowPose(P, e, draw);
@@ -821,7 +842,7 @@ function humanoid(k: Kit): RigClip[] {
     return list;
   };
   return marked(k, [
-    k.clip("04", "Idle", 3, (_t, P, ph) => {
+    clip("04", "Idle", 3, (_t, P, ph) => {
       P.move("Hips", k.up(-0.004 * H * (1 - Math.cos(ph))));
       pitch(P, "Chest", 0.03 * Math.sin(ph));
       yaw(P, "Head", 0.12 * Math.sin(ph));
@@ -833,9 +854,9 @@ function humanoid(k: Kit): RigClip[] {
       carry(P);
       tail(P, 2 * ph, 0.2);
     }),
-    k.clip("04", "Walk", 1.1, (_t, P, ph) => gait(P, ph, { leg: 0.45, knee: 0.8, arm: 0.4, bob: 0.012, lean: 0.05, bend: 0.3 })),
-    k.clip("04", "Run", 0.7, (_t, P, ph) => gait(P, ph, { leg: 0.8, knee: 1.4, arm: 0.7, bob: 0.03, lean: 0.25, bend: 1.3 })),
-    k.clip("06", "Jump", 1.6, (t, P) => {
+    clip("04", "Walk", 1.1, (_t, P, ph) => gait(P, ph, { leg: 0.45, knee: 0.8, arm: 0.4, bob: 0.012, lean: 0.05, bend: 0.3 })),
+    clip("04", "Run", 0.7, (_t, P, ph) => gait(P, ph, { leg: 0.8, knee: 1.4, arm: 0.7, bob: 0.03, lean: 0.25, bend: 1.3 })),
+    clip("06", "Jump", 1.6, (t, P) => {
       const crouch = keys(t, [[0, 0], [0.3, 1], [0.42, 0], [0.95, 0], [1.12, 0.8], [1.45, 0]]);
       const air = t > 0.4 && t < 1.1 ? Math.sin((Math.PI * (t - 0.4)) / 0.7) : 0;
       const tuck = keys(t, [[0.42, 0], [0.7, 1], [1.0, 0]]);
@@ -850,7 +871,7 @@ function humanoid(k: Kit): RigClip[] {
       pitch(P, "RightUpperArm", 0.6 * crouch);
       for (const side of ["Left", "Right"] as const) legs(P, side, -0.9 * crouch - 0.5 * tuck, 1.6 * crouch + 0.9 * tuck);
     }),
-    k.clip("06", "Fall", 2.2, (t, P) => {
+    clip("06", "Fall", 2.2, (t, P) => {
       const e = keys(t, [[0, 0], [0.3, 0.06], [1.0, 1], [1.12, 0.95], [1.25, 1]]);
       P.move("Root", k.up(0.12 * H * e));
       pitch(P, "Root", (-Math.PI / 2) * e);
@@ -858,14 +879,14 @@ function humanoid(k: Kit): RigClip[] {
       pitch(P, "Neck", 0.3 * e);
       for (const side of ["Left", "Right"] as const) legs(P, side, -0.35 * e, 0.6 * e);
     }),
-    k.clip("11", "Interact_Wave", 2, (_t, P, ph) => {
+    clip("11", "Interact_Wave", 2, (_t, P, ph) => {
       armsDown(P);
       armTo(P, "Right", 1.0);
       roll(P, "RightLowerArm", -0.5 + 0.35 * Math.sin(4 * ph));
       elbow(P, "Left", 0.2);
       roll(P, "Head", -0.1);
     }),
-    k.clip("11", "Interact_PickUp", 2.4, (t, P) => {
+    clip("11", "Interact_PickUp", 2.4, (t, P) => {
       const e = keys(t, [[0, 0], [0.8, 1], [1.4, 1], [2.2, 0]]);
       P.move("Hips", k.up(-0.16 * H * e));
       pitch(P, "Spine", 0.6 * e);
@@ -875,7 +896,7 @@ function humanoid(k: Kit): RigClip[] {
       pitch(P, "RightUpperArm", -0.5 * e);
       for (const side of ["Left", "Right"] as const) legs(P, side, -0.9 * e, 1.3 * e);
     }),
-    k.clip("11", "Interact_Push", 1.6, (t, P) => {
+    clip("11", "Interact_Push", 1.6, (t, P) => {
       const e = keys(t, [[0, 0], [0.5, 1], [1.0, 1], [1.6, 0]]);
       pitch(P, "Spine", 0.2 * e);
       armsDown(P);
@@ -889,7 +910,7 @@ function humanoid(k: Kit): RigClip[] {
     // Attacks: wind-up, fast strike, short hold, back to rest (so they blend with Idle).
     ...(weapons.Right === "none"
       ? [
-          k.clip("13", "Attack_Punch", 1, (t, P) => {
+          clip("13", "Attack_Punch", 1, (t, P) => {
             const load = keys(t, [[0, 0], [0.25, 1], [0.35, 0]]);
             const hit = keys(t, [[0.25, 0], [0.35, 1], [0.55, 1], [0.95, 0]]);
             const guard = keys(t, [[0, 0], [0.2, 1], [0.7, 1], [1, 0]]);
@@ -907,7 +928,7 @@ function humanoid(k: Kit): RigClip[] {
           }),
         ]
       : []),
-    k.clip("13", "Attack_Kick", 1.1, (t, P) => {
+    clip("13", "Attack_Kick", 1.1, (t, P) => {
       const e = keys(t, [[0, 0], [0.2, 1], [0.8, 1], [1.05, 0]]);
       const thigh = keys(t, [[0, 0], [0.3, -1.1], [0.42, -1.4], [0.65, -1.4], [1.05, 0]]);
       const knee = keys(t, [[0, 0], [0.3, 1.7], [0.42, 0.05], [0.65, 0.05], [0.82, 1.2], [1.05, 0]]);
@@ -924,7 +945,7 @@ function humanoid(k: Kit): RigClip[] {
     // Palm strike (chưởng): both palms drawn to the hips, then thrust forward from a wide stance.
     ...(unarmed
       ? [
-          k.clip("13", "Attack_Palm", 1.2, (t, P) => {
+          clip("13", "Attack_Palm", 1.2, (t, P) => {
             const load = keys(t, [[0, 0], [0.35, 1], [0.45, 0]]);
             const hit = keys(t, [[0.35, 0], [0.47, 1], [0.8, 1], [1.15, 0]]);
             const stance = load + hit;
@@ -940,7 +961,7 @@ function humanoid(k: Kit): RigClip[] {
           }),
         ]
       : []),
-    k.clip("13", "Attack_Stomp", 1.1, (t, P) => {
+    clip("13", "Attack_Stomp", 1.1, (t, P) => {
       const lift = keys(t, [[0, 0], [0.4, 1], [0.52, 0]]);
       const impact = keys(t, [[0.45, 0], [0.52, 1], [0.7, 1], [1.05, 0]]);
       P.move("Hips", k.up(0.02 * H * lift - 0.025 * H * impact));
@@ -953,7 +974,7 @@ function humanoid(k: Kit): RigClip[] {
     }),
     // Leap forward (nhảy tới) and land in a crouch, then settle back on the spot.
     (() => {
-      const c = k.clip("13", "Attack_Leap", 1.5, (t, P) => {
+      const c = clip("13", "Attack_Leap", 1.5, (t, P) => {
         const crouch = keys(t, [[0, 0], [0.3, 1], [0.4, 0], [0.8, 0], [0.9, 1], [1.45, 0]]);
         const air = t > 0.38 && t < 0.85 ? Math.sin((Math.PI * (t - 0.38)) / 0.47) : 0;
         const ahead = keys(t, [[0.35, 0], [0.85, 1], [1.1, 1], [1.45, 0]]);
@@ -976,7 +997,7 @@ function humanoid(k: Kit): RigClip[] {
       return unarmed ? c : hits(c, "weapon", strikers, [0.8, 1.1]);
     })(),
     (() => {
-      const c = spinAttack(k, (P, e) => {
+      const c = spinAttack({ ...k, clip }, (P, e) => {
         P.move("Hips", k.up(-0.05 * H * e));
         armsDown(P, 1 - e);
         elbow(P, "Left", 0.2);
@@ -990,7 +1011,7 @@ function humanoid(k: Kit): RigClip[] {
     })(),
     ...(unarmed ? unarmedWeaponClips() : weaponClips()),
     // Hit reaction: a jolt backwards from a blow to the chest, then recover.
-    k.clip("14", "Hit", 0.7, (t, P) => {
+    clip("14", "Hit", 0.7, (t, P) => {
       const e = keys(t, [[0, 0], [0.08, 1], [0.25, 0.8], [0.7, 0]]);
       P.move("Hips", k.fwd(-0.03 * H * e).add(k.up(-0.015 * H * e)));
       pitch(P, "Spine", -0.2 * e);
@@ -1005,7 +1026,7 @@ function humanoid(k: Kit): RigClip[] {
       legs(P, "Right", 0.1 * e, 0.2 * e);
     }),
     // Death: knees buckle, then a limp fall forward onto the ground; ends lying there.
-    k.clip("14", "Death", 2.2, (t, P) => {
+    clip("14", "Death", 2.2, (t, P) => {
       const buckle = keys(t, [[0, 0], [0.5, 1]]);
       const e = keys(t, [[0.4, 0], [1.2, 1], [1.3, 0.95], [1.42, 1]]);
       P.move("Hips", k.up(-0.08 * H * buckle * (1 - e)));
@@ -1048,12 +1069,12 @@ function quadruped(k: Kit): RigClip[] {
   /** Tail sway: the same overall swing whatever the number of links. */
   const tail = (P: Poser, ph: number, a: number) =>
     tails.forEach((b, i) => yaw(P, b, ((3 * a) / tails.length) * Math.sin(ph - (2.4 * i) / tails.length)));
-  /** Bends the neck (over both links of a long one): positive lowers the head. */
+  const necks = k.bones(/^Neck\d*$/);
+  /** Distribute the bend across every neck link: positive lowers the head. */
   const neck = (P: Poser, a: number) => {
-    if (!has("Neck2")) return pitch(P, "Neck", a);
-    pitch(P, "Neck", a / 2);
-    pitch(P, "Neck2", a / 2);
+    necks.forEach(b => pitch(P, b, a / necks.length));
   };
+  const turnNeck = (P: Poser, a: number) => necks.forEach(b => yaw(P, b, a / necks.length));
   /** Opens the jaw (models rigged with one): 1 = wide open. */
   const jaw = (P: Poser, open: number) => pitch(P, "Jaw", 0.5 * open);
   /** Short arms of an animal on two legs, swinging opposite each other. */
@@ -1235,7 +1256,7 @@ function quadruped(k: Kit): RigClip[] {
               P.move("Hips", k.up(-0.03 * H * lunge));
               yaw(P, "Spine", -0.1 * shake);
               neck(P, 0.2 * lunge);
-              yaw(P, "Neck", 0.35 * shake);
+              turnNeck(P, 0.35 * shake);
               yaw(P, "Head", 0.25 * shake);
               roll(P, "Head", 0.2 * shake);
               jaw(P, keys(t, [[0, 0], [0.2, 1], [0.32, 0], [1.3, 0], [1.4, 0.6], [1.55, 0]]));
@@ -1329,7 +1350,7 @@ function quadruped(k: Kit): RigClip[] {
         tails.forEach((b, i) =>
           yaw(P, b, (-1.2 / tails.length) * keys(t - 0.04 * i, [[0, 0], [0.4, -0.5], [0.72, 1.2], [0.95, 1], [1.35, 0]])),
         );
-        yaw(P, "Neck", 0.3 * turn);
+        turnNeck(P, 0.3 * turn);
         crouchLegs(P, 0.3 * Math.abs(turn));
         // The Root last, so the parts above are posed in the body's own axes.
         yaw(P, "Root", -0.6 * turn);
@@ -1360,7 +1381,7 @@ function quadruped(k: Kit): RigClip[] {
               const blast = keys(t, [[0.65, 0], [0.8, 1], [1.8, 1], [2.3, 0]]);
               pitch(P, "Spine", -0.05 * inhale);
               neck(P, -0.5 * inhale + 0.2 * blast);
-              yaw(P, "Neck", 0.3 * blast * Math.sin(Math.PI * (t - 0.8)));
+              turnNeck(P, 0.3 * blast * Math.sin(Math.PI * (t - 0.8)));
               pitch(P, "Head", -0.3 * inhale + 0.1 * blast);
               jaw(P, 0.3 * inhale + 1.2 * blast);
               aimWings(k, P, spreadPose(k), 0.4 * (inhale + blast));
@@ -1377,7 +1398,7 @@ function quadruped(k: Kit): RigClip[] {
               const side = keys(t, [[0, 0], [0.4, -1], [0.62, 1.2], [0.8, 1], [1.45, 0]]);
               const reach = keys(t, [[0, 0], [0.4, 1], [0.8, 1], [1.45, 0]]);
               yaw(P, "Spine", 0.05 * side);
-              yaw(P, "Neck", 0.15 * side);
+              turnNeck(P, 0.15 * side);
               yaw(P, "Head", 0.15 * side);
               neck(P, 0.15 * reach);
               ["Trunk1", "Trunk2", "Trunk3"].forEach((b, i) => {

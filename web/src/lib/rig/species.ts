@@ -56,6 +56,14 @@ export const SPECIES: Species[] = [
     attacks: ["Attack_Charge", "Attack_Headbutt"],
   },
   {
+    id: "sauropod",
+    archetype: "largeBeast",
+    category: "quadruped",
+    options: { longNeck: true, tail: true },
+    locomotion: ["Walk", "Run"],
+    attacks: ["Attack_Stomp", "Attack_TailSwipe"],
+  },
+  {
     id: "theropod",
     archetype: "biped",
     category: "quadruped",

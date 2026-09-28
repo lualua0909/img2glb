@@ -39,8 +39,8 @@ const schema = z
     VIETQR_ACCOUNT_NAME: z.string().optional(),
 
     SIGNUP_CREDITS: z.coerce.number().int().min(0).default(10),
-    MAX_ACTIVE_JOBS_PER_USER: z.coerce.number().int().min(1).default(2),
-    JOB_TIMEOUT_MINUTES: z.coerce.number().int().min(1).default(30),
+    MAX_ACTIVE_JOBS_PER_USER: z.coerce.number().int().min(1).default(10),
+    JOB_TIMEOUT_MINUTES: z.coerce.number().int().min(1).default(60),
 
     CRON_SECRET: z.string().min(16).optional(),
   })

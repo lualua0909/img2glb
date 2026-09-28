@@ -6,6 +6,7 @@ import {
   CircleCheckIcon,
   CircleIcon,
   FileXIcon,
+  RotateCcwIcon,
   ShrinkIcon,
   SparklesIcon,
   TriangleAlertIcon,
@@ -50,6 +51,8 @@ const RigEditor = dynamic(
   () => import("./rig-editor").then((m) => m.RigEditor),
   { ssr: false },
 );
+
+const EmissionEditor = dynamic(() => import("./emission-editor").then(m => m.EmissionEditor), { ssr: false });
 
 const POLL_MS = 2500;
 const isActive = (g: GenerationDTO) =>
@@ -313,8 +316,11 @@ export function GenerationView({
   const [gen, setGen] = useState(initial);
   const [elapsed, setElapsed] = useState(0);
   const [painting, setPainting] = useState(false);
+  const [emission, setEmission] = useState(false);
+  const [modelRevision, setModelRevision] = useState(0);
   const [refining, setRefining] = useState(false);
   const [rigging, setRigging] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const [versions, setVersions] = useState<VersionDTO[]>([]);
 
   useEffect(() => {
@@ -365,6 +371,7 @@ export function GenerationView({
   async function open(id: string) {
     setRefining(false);
     setPainting(false);
+    setEmission(false);
     setRigging(false);
     if (syncUrl)
       return router.replace(`/app/generations/${id}`, { scroll: false });
@@ -390,7 +397,7 @@ export function GenerationView({
 
   const done =
     gen.status === "succeeded" && gen.modelUrl && gen.modelDownloadUrl;
-  const editing = painting || rigging;
+  const editing = painting || rigging || emission;
   /** A new version was made (refined or rigged): show it. */
   const showVersion = (next: GenerationDTO) => {
     setRefining(false);
@@ -401,6 +408,23 @@ export function GenerationView({
     router.refresh(); // credit balance and nav busy indicator
   };
   const baseName = `model-${gen.id.slice(0, 8)}`;
+
+  async function retry() {
+    if (retrying) return;
+    setRetrying(true);
+    try {
+      const res = await fetch(`/api/generations/${gen.id}/retry`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? t.gen.retryFailed);
+      setElapsed(0);
+      setGen(data as GenerationDTO);
+      showVersion(data as GenerationDTO);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t.gen.retryFailed);
+    } finally {
+      setRetrying(false);
+    }
+  }
 
   return (
     <div className="@container/gen flex h-full flex-col">
@@ -413,6 +437,16 @@ export function GenerationView({
                 onCancel={() => setRigging(false)}
                 onSaved={showVersion}
               />
+            ) : emission ? (
+              <EmissionEditor
+                gen={gen}
+                onCancel={() => setEmission(false)}
+                onSaved={(next) => {
+                  setGen(next);
+                  setModelRevision(Date.now());
+                  setEmission(false);
+                }}
+              />
             ) : painting ? (
               <PaintEditor
                 gen={gen}
@@ -424,7 +458,7 @@ export function GenerationView({
               />
             ) : (
               <ModelInspector
-                src={gen.modelUrl}
+                src={modelRevision ? `${gen.modelUrl}${gen.modelUrl.includes("?") ? "&" : "?"}revision=${modelRevision}` : gen.modelUrl}
                 fileBytes={gen.modelBytes}
                 baseName={baseName}
                 onSaveModel={async (glb) => {
@@ -471,6 +505,10 @@ export function GenerationView({
                     {t.gen.failedHint}
                   </p>
                 ) : null}
+                <Button className="mt-4" onClick={retry} disabled={retrying}>
+                  {retrying ? <Spinner className="size-4" /> : <RotateCcwIcon className="size-4" />}
+                  {retrying ? t.gen.retrying : t.gen.retry}
+                </Button>
               </div>
             </div>
           ) : (
@@ -587,6 +625,10 @@ export function GenerationView({
                 {t.gen.refine}
               </Button>
             ) : null}
+            <Button variant="outline" onClick={() => { setRefining(false); setEmission(true); }}>
+              <SparklesIcon />
+              {t.emission.open}
+            </Button>
             {/* No auto texture: let the user paint colors by hand. */}
             {!gen.textured && !gen.rig ? (
               <Button variant="outline" onClick={() => setPainting(true)}>

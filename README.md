@@ -50,6 +50,7 @@ The setup scripts do this automatically when `Hunyuan3D-2/.git` is missing.
 
 ## Docs
 
+- [`docs/blender-auto-rig.md`](docs/blender-auto-rig.md) — local headless Blender Rigify, RigConfig, testing and AI roadmap
 - [`web/README.md`](web/README.md) — architecture, job state machine, credits, payments, admin CMS, production checklist
 - [`worker/README.md`](worker/README.md) — Docker/CUDA run, env vars, refinement, auto-rig
 - [`worker/mac/README.md`](worker/mac/README.md) — Apple Silicon specifics and measured timings

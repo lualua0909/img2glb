@@ -323,6 +323,7 @@ export function ModelInspector({
       const { gltfLoader } = await import("@/lib/gltf-loader");
       const { OrbitControls } = await import("three/examples/jsm/controls/OrbitControls.js");
       const { RoomEnvironment } = await import("three/examples/jsm/environments/RoomEnvironment.js");
+      const { createBloom } = await import("@/lib/emission/bloom");
       const { GLTFExporter } = await import("three/examples/jsm/exporters/GLTFExporter.js");
       const gltf = await gltfLoader().loadAsync(src);
       if (disposed) return;
@@ -473,9 +474,17 @@ export function ModelInspector({
 
       let tween: { from: Vector3; to: Vector3; start: number } | null = null;
 
+      const hasEmission = meshes.some(m => (Array.isArray(m.material) ? m.material : [m.material]).some(mat =>
+        mat instanceof THREE.MeshStandardMaterial && mat.emissiveIntensity > 0 && mat.emissive.getHex() !== 0,
+      ));
+      const bloom = hasEmission ? createBloom(renderer, scene, camera) : null;
+      const renderModel = () => {
+        if (bloom && currentMode === "textured") bloom.render(); else renderer.render(scene, camera);
+      };
       const resize = () => {
         const { clientWidth: w, clientHeight: h } = el;
         renderer.setSize(w, h);
+        bloom?.resize(w, h);
         camera.aspect = w / Math.max(h, 1);
         camera.updateProjectionMatrix();
       };
@@ -690,7 +699,7 @@ export function ModelInspector({
         playTick(dt, performance.now());
         mixer?.update(dt);
         controls.update();
-        renderer.render(scene, camera);
+        renderModel();
       });
 
       let currentMode: ViewMode = "textured";
@@ -794,7 +803,7 @@ export function ModelInspector({
           return raycaster.intersectObjects(meshes, false).length > 0;
         },
         screenshot() {
-          renderer.render(scene, camera);
+          renderModel();
           return canvas.toDataURL("image/png");
         },
         setPlay(on) {
@@ -963,6 +972,7 @@ export function ModelInspector({
         boundsHelper.dispose();
         ground.geometry.dispose();
         pmrem.dispose();
+        bloom?.dispose();
         renderer.dispose();
         canvas.remove();
       };
