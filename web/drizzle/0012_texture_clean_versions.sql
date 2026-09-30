@@ -1,0 +1,1 @@
+ALTER TABLE "generation" ADD COLUMN "texture_clean" jsonb;

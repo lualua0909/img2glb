@@ -1,4 +1,4 @@
-import { BoneIcon, BoxIcon, ImageOffIcon, PlusIcon, TypeIcon, WandSparklesIcon } from "lucide-react";
+import { BoneIcon, BoxIcon, ChevronLeftIcon, ChevronRightIcon, ImageOffIcon, PlusIcon, TypeIcon, WandSparklesIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { DeleteGenerationButton } from "@/components/delete-generation-button";
@@ -22,7 +22,9 @@ const STATUS_DOT: Record<string, string> = {
   failed: "bg-destructive",
 };
 
-export default async function LibraryPage() {
+const PAGE_SIZE = 15;
+
+export default async function LibraryPage({ searchParams }: { searchParams: Promise<{ page?: string }> }) {
   const user = await requireUser();
   const [t, locale] = [await getT(), await getLocale()];
   // One card per model: versions share a rootId; rows are newest first, so the first of each chain is its latest.
@@ -31,8 +33,11 @@ export default async function LibraryPage() {
     const root = g.rootId ?? g.id;
     chains.set(root, [...(chains.get(root) ?? []), g]);
   }
+  const total = chains.size;
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const page = Math.min(Math.max(1, Number((await searchParams).page) || 1), pageCount);
   const items = await Promise.all(
-    [...chains.values()].map(async (chain) => ({ ...(await toDTO(chain[0])), versionCount: chain.length })),
+    [...chains.values()].slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map(async (chain) => ({ ...(await toDTO(chain[0])), versionCount: chain.length })),
   );
 
   if (items.length === 0)
@@ -59,7 +64,7 @@ export default async function LibraryPage() {
       <div className="flex items-end justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">{t.library.title}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">{t.library.count(items.length)}</p>
+          <p className="mt-1 text-sm text-muted-foreground">{t.library.count(total)}</p>
         </div>
         <Button asChild>
           <Link href="/app">
@@ -131,6 +136,43 @@ export default async function LibraryPage() {
           </div>
         ))}
       </div>
+      {pageCount > 1 && (
+        <nav className="flex items-center justify-center gap-3">
+          <PageLink page={page - 1} disabled={page <= 1} label={t.library.prevPage}>
+            <ChevronLeftIcon />
+          </PageLink>
+          <span className="text-sm font-medium text-muted-foreground tabular-nums">{t.library.page(page, pageCount)}</span>
+          <PageLink page={page + 1} disabled={page >= pageCount} label={t.library.nextPage}>
+            <ChevronRightIcon />
+          </PageLink>
+        </nav>
+      )}
     </div>
+  );
+}
+
+function PageLink({
+  page,
+  disabled,
+  label,
+  children,
+}: {
+  page: number;
+  disabled: boolean;
+  label: string;
+  children: React.ReactNode;
+}) {
+  if (disabled)
+    return (
+      <Button variant="outline" size="icon" disabled aria-label={label}>
+        {children}
+      </Button>
+    );
+  return (
+    <Button asChild variant="outline" size="icon">
+      <Link href={page > 1 ? `/app/library?page=${page}` : "/app/library"} aria-label={label}>
+        {children}
+      </Link>
+    </Button>
   );
 }

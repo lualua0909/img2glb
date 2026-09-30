@@ -37,6 +37,8 @@ export interface GenerationProvider {
   readonly name: string;
   start(input: StartInput): Promise<ProviderState>;
   poll(state: ProviderState): Promise<PollResult>;
+  /** Stop a queued or running job. */
+  cancel(state: ProviderState): Promise<void>;
   /** Upload preprocessing (denoise, background removal, centering) -> PNG; null = no object found. Absent = used as uploaded. */
   preprocess?(image: Blob): Promise<Uint8Array<ArrayBuffer> | null>;
 }

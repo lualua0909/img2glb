@@ -15,12 +15,12 @@ const box = (x: number, y: number, z: number, w: number, h: number, d: number, s
 };
 
 /** Fish facing +Z with a pair of tall thin feelers (ears, antennae) standing up from its head. */
-const fish = () =>
-  buildModelData([
-    box(0, 0.5, 0, 0.3, 0.3, 2, 4),
-    box(0.1, 0.9, 0.7, 0.06, 0.5, 0.06, 4),
-    box(-0.1, 0.9, 0.7, 0.06, 0.5, 0.06, 4),
-  ]);
+const fishMeshes = () => [
+  box(0, 0.5, 0, 0.3, 0.3, 2, 4),
+  box(0.1, 0.9, 0.7, 0.06, 0.5, 0.06, 4),
+  box(-0.1, 0.9, 0.7, 0.06, 0.5, 0.06, 4),
+];
+const fish = () => buildModelData(fishMeshes());
 
 /** World direction of a bone (head -> tail) at `fraction` of a clip. */
 function dirAt(plan: RigPlan, name: string, bone: string, fraction: number) {
@@ -96,5 +96,23 @@ test("feelers work on every animal template", () => {
     const plan = planRig(category, model, markers, options);
     assert.equal(plan.bones.filter((b) => b.name.startsWith("Feeler")).length, 12, category);
     for (const { clip } of buildClips(plan)) for (const t of clip.tracks) assert.ok(Array.from(t.values).every(Number.isFinite), category);
+  }
+});
+
+test("feelers and long tails drift on their own, even when the body holds still, and loop seamlessly", () => {
+  // The fish with a long thin tail trailing behind it.
+  const model = buildModelData([...fishMeshes(), box(0, 0.5, -1.8, 0.08, 0.08, 1.6, 4)]);
+  const options = { ...DEFAULT_RIG_OPTIONS, feelers: 1 };
+  const markers = guessMarkers("quadruped", model, options);
+  const plan = planRig("quadruped", model, markers, options);
+  assert.ok(markers.tailTip.z < -2, `tail tip at the end of the tail: ${markers.tailTip.toArray()}`);
+  // Scale_Pulse never turns a bone: anything turning is the drift.
+  const turning = buildClips(plan).find((c) => c.clip.name === "Scale_Pulse")!.clip.tracks.map((t) => t.name);
+  assert.ok(turning.includes("Feeler1_3L.quaternion"), "feeler drifts");
+  assert.ok(turning.some((n) => /^Tail\d+\.quaternion$/.test(n)), "long tail drifts");
+  assert.ok(!turning.some((n) => /^(Hips|Spine|Head)\.quaternion$/.test(n)), "body stays still");
+  for (const bone of ["Feeler1_3L", plan.bones.filter((b) => /^Tail\d+$/.test(b.name)).at(-1)!.name]) {
+    const [a, b] = [0, 1].map((f) => dirAt(plan, "Idle", bone, f));
+    assert.ok(a.angleTo(b) < 1e-3, `${bone} loops`);
   }
 });

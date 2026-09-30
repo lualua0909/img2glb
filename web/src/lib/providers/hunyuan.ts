@@ -60,6 +60,11 @@ export function createHunyuanProvider(opts: { name: string; url: string; token: 
       return { jobId: job.id, queueSlots: job.status === "queued" ? (job.queue_position ?? 0) + 2 : 1 };
     },
 
+    async cancel(state) {
+      const res = await call(`/v1/jobs/${encodeURIComponent(String(state.jobId))}/cancel`, { method: "POST" });
+      if (!res.ok && res.status !== 404) throw new Error(`Worker cancel error: ${res.status}`);
+    },
+
     async poll(state: ProviderState): Promise<PollResult> {
       const jobId = String(state.jobId);
       const res = await call(`/v1/jobs/${encodeURIComponent(jobId)}`);

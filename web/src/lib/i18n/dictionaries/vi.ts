@@ -293,6 +293,12 @@ export const vi: Dictionary = {
     retry: "Retry",
     retrying: "Đang thử lại…",
     retryFailed: "Không thể chạy lại tác vụ",
+    cancel: "Huỷ",
+    cancelling: "Đang huỷ…",
+    cancelFailed: "Không thể huỷ tác vụ",
+    cancelTitle: "Huỷ tác vụ này?",
+    cancelBody: "Tác vụ sẽ dừng và mất tiến trình hiện tại. Credit của tác vụ được hoàn lại.",
+    keepRunning: "Tiếp tục chạy",
     fileMissing: "Không tìm thấy file mô hình",
     fileMissingBody: "File của mô hình này không còn trên máy chủ. Hãy xoá hoặc tạo lại mô hình.",
     textured: "Có texture",
@@ -358,6 +364,20 @@ export const vi: Dictionary = {
     failed: "Không nén được model",
   },
 
+  textureClean: {
+    open: "Làm sạch texture",
+    working: "Đang làm sạch…",
+    note: "Xoá vết lem, loang màu và nhiễu trên texture, tạo thành phiên bản mới. Bản gốc được giữ nguyên.",
+    levels: {
+      light: { label: "Nhẹ", hint: "Xoá nhiễu, chấm lấm tấm · giữ nguyên chi tiết" },
+      balanced: { label: "Cân bằng", hint: "Màu sạch, đều theo từng vùng · giữ đổ bóng và hoa văn" },
+      strong: { label: "Mạnh", hint: "Ít màu nhất, tô phẳng mịn nhất · chi tiết nhỏ có thể mờ đi" },
+    },
+    summary: (level) => `Đã làm sạch texture · ${level}`,
+    done: "Đã làm sạch texture — đã tạo phiên bản mới",
+    failed: "Không làm sạch được texture",
+  },
+
   rig: {
     open: "Rig & Animation",
     badge: "Đã rig",
@@ -396,6 +416,9 @@ export const vi: Dictionary = {
     horns: "Sừng / ngà / gạc",
     wings: "Có cánh",
     bipedal: "Đi bằng 2 chân",
+    armless: "Không có chi trước",
+    wingPairs: "Số cặp cánh",
+    legless: "Không có chân",
     legs: "Có chân",
     swim: "Kiểu bơi",
     swimStyles: {
@@ -432,6 +455,9 @@ export const vi: Dictionary = {
       theropod: { label: "Khủng long ăn thịt", hint: "2 chân, hàm · cắn, quật đuôi" },
       bird: { label: "Chim", hint: "Cánh 3 khớp · mổ, cào, lao xuống" },
       westernDragon: { label: "Rồng phương Tây", hint: "Cánh, hàm · cắn, cào, quật đuôi, phun lửa" },
+      wyvern: { label: "Rồng 2 chân (wyvern)", hint: "2 chân, cánh thay chi trước · cắn, quật đuôi, phun lửa" },
+      fourWingedFlyer: { label: "Thú bay 4 cánh", hint: "2 cặp cánh, 2 chân · mổ, vồ, lao xuống" },
+      skyWyrm: { label: "Thú bay không chân", hint: "Nhiều cặp cánh, đuôi dài · cắn, xoáy cánh" },
       snake: { label: "Rắn", hint: "Thân dài, hàm · lao cắn, quấn siết" },
       asianDragon: { label: "Rồng châu Á", hint: "Thân dài, có chân · bay, cắn, cào" },
       bear: { label: "Gấu", hint: "Hàm, vuốt lớn · vả, cắn, đứng 2 chân" },
@@ -533,6 +559,8 @@ export const vi: Dictionary = {
       weaponTipLeft: "Vũ khí trái: mũi",
     },
     wheel: (n, side) => `Bánh ${n}${side === "R" ? " (phải)" : ""}`,
+    wingJoint: (pair: number, side: string, joint: "Elbow" | "Wrist" | "Tip") =>
+      `${{ Elbow: "Khuỷu", Wrist: "Cổ", Tip: "Chóp" }[joint]} cánh ${pair} ${side === "R" ? "phải" : "trái"}`,
     feeler: (n, side, tip) => `Râu ${n} ${side === "R" ? "phải" : "trái"}: ${tip ? "ngọn" : "gốc"}`,
     animTitle: "Animation",
     animBody: "Bấm vào clip để xem thử. Clip được tích sẽ lưu vào mô hình (GLB).",
@@ -766,6 +794,9 @@ export const vi: Dictionary = {
     emptyTitle: "Chưa có mô hình nào",
     emptyBody: "Tải ảnh lên hoặc viết mô tả để tạo mô hình 3D đầu tiên của bạn.",
     createModel: "Tạo mô hình",
+    prevPage: "Trang trước",
+    nextPage: "Trang sau",
+    page: (n, total) => `Trang ${n} / ${total}`,
     status: {
       queued: "Đang chờ",
       processing: "Đang xử lý",

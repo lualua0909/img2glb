@@ -47,6 +47,7 @@ import {
   markerView,
   type Markers,
   MAX_FEELERS,
+  MAX_WING_PAIRS,
   planRig,
   RIG_CATEGORIES,
   type RigCategory,
@@ -419,6 +420,8 @@ export function RigEditor({
     if (wheel) return tr.wheel(Number(wheel[1]), wheel[2]);
     const feeler = /^feeler(Root|Tip)(\d+)([LR])$/.exec(id);
     if (feeler) return tr.feeler(Number(feeler[2]), feeler[3], feeler[1] === "Tip");
+    const wing = /^wing(\d)(Elbow|Wrist|Tip)([LR])$/.exec(id);
+    if (wing) return tr.wingJoint(Number(wing[1]), wing[3], wing[2] as "Elbow" | "Wrist" | "Tip");
     return tr.markers[id] ?? id;
   };
   const ready = status === "ready";
@@ -741,12 +744,50 @@ export function RigEditor({
                         <Switch checked={options.bipedal} onCheckedChange={(v) => changeOptions({ ...options, bipedal: v })} />
                       </label>
                     ) : null}
+                    {category === "quadruped" && options.bipedal ? (
+                      <label className="flex cursor-pointer items-center justify-between gap-3 px-3.5 py-2.5 text-sm font-medium">
+                        {tr.armless}
+                        <Switch checked={options.armless} onCheckedChange={(v) => changeOptions({ ...options, armless: v })} />
+                      </label>
+                    ) : null}
                   </>
                 ) : null}
                 {category === "humanoid" || category === "quadruped" ? (
                   <label className="flex cursor-pointer items-center justify-between gap-3 px-3.5 py-2.5 text-sm font-medium">
                     {tr.wings}
                     <Switch checked={options.wings} onCheckedChange={(v) => changeOptions({ ...options, wings: v })} />
+                  </label>
+                ) : null}
+                {category === "bird" || (category === "quadruped" && options.wings) ? (
+                  <div className="flex items-center justify-between gap-3 px-3.5 py-2 text-sm font-medium">
+                    {tr.wingPairs}
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        aria-label="-"
+                        disabled={options.wingPairs <= 1}
+                        onClick={() => changeOptions({ ...options, wingPairs: options.wingPairs - 1 })}
+                      >
+                        <MinusIcon />
+                      </Button>
+                      <span className="w-5 text-center tabular-nums">{options.wingPairs}</span>
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        aria-label="+"
+                        disabled={options.wingPairs >= MAX_WING_PAIRS}
+                        onClick={() => changeOptions({ ...options, wingPairs: options.wingPairs + 1 })}
+                      >
+                        <PlusIcon />
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
+                {category === "bird" ? (
+                  <label className="flex cursor-pointer items-center justify-between gap-3 px-3.5 py-2.5 text-sm font-medium">
+                    {tr.legless}
+                    <Switch checked={options.legless} onCheckedChange={(v) => changeOptions({ ...options, legless: v })} />
                   </label>
                 ) : null}
                 {category === "humanoid"

@@ -6,6 +6,7 @@ import {
   CircleCheckIcon,
   CircleIcon,
   FileXIcon,
+  PaintBucketIcon,
   RotateCcwIcon,
   ShrinkIcon,
   SparklesIcon,
@@ -26,6 +27,7 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
+  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -45,6 +47,7 @@ import { useI18n } from "./i18n-provider";
 import { ModelInspector } from "./model-inspector";
 import { PaintEditor } from "./paint-editor";
 import { RefinePanel } from "./refine-panel";
+import { TextureCleanMenu } from "./texture-clean-menu";
 
 // Loaded on demand: three.js + BVH + skinning only when the user opens the rig editor.
 const RigEditor = dynamic(
@@ -240,12 +243,18 @@ function Versions({
                     t.compress.levels[v.compress.level]?.label ??
                       v.compress.level,
                   )
-                : v.rig
-                  ? t.rig.summary(
-                      t.rig.categories[v.rig.category]?.label ?? v.rig.category,
-                      v.rig.clips.length,
+                : v.textureClean
+                  ? t.textureClean.summary(
+                      t.textureClean.levels[v.textureClean.level]?.label ??
+                        v.textureClean.level,
                     )
-                  : (v.refine?.prompt ?? t.gen.original)}
+                  : v.rig
+                    ? t.rig.summary(
+                        t.rig.categories[v.rig.category]?.label ??
+                          v.rig.category,
+                        v.rig.clips.length,
+                      )
+                    : (v.refine?.prompt ?? t.gen.original)}
             </TooltipContent>
           </Tooltip>
           {/* Child versions only: deleting the original would orphan its refinements. */}
@@ -323,6 +332,7 @@ export function GenerationView({
   const [refining, setRefining] = useState(false);
   const [rigging, setRigging] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [versions, setVersions] = useState<VersionDTO[]>([]);
 
   useEffect(() => {
@@ -428,6 +438,22 @@ export function GenerationView({
     }
   }
 
+  async function cancel() {
+    if (cancelling) return;
+    setCancelling(true);
+    try {
+      const res = await fetch(`/api/generations/${gen.id}/cancel`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? t.gen.cancelFailed);
+      setGen(data as GenerationDTO);
+      router.refresh(); // credit balance (refund) and lists
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t.gen.cancelFailed);
+    } finally {
+      setCancelling(false);
+    }
+  }
+
   return (
     <div className="@container/gen flex h-full flex-col">
       <div className="relative flex min-h-[320px] flex-1 gap-2">
@@ -525,7 +551,29 @@ export function GenerationView({
                   className="pointer-events-none absolute inset-0 size-full scale-105 object-cover opacity-90 blur-sm"
                 />
               ) : null}
-              <Progress gen={gen} elapsed={elapsed} />
+              <div className="relative flex flex-col items-center gap-3">
+                <Progress gen={gen} elapsed={elapsed} />
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="outline" disabled={cancelling}>
+                      {cancelling ? <Spinner className="size-4" /> : <XIcon className="size-4" />}
+                      {cancelling ? t.gen.cancelling : t.gen.cancel}
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>{t.gen.cancelTitle}</AlertDialogTitle>
+                      <AlertDialogDescription>{t.gen.cancelBody}</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>{t.gen.keepRunning}</AlertDialogCancel>
+                      <AlertDialogAction variant="destructive" onClick={cancel}>
+                        {t.gen.cancel}
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
             </div>
           )}
         </div>
@@ -556,6 +604,17 @@ export function GenerationView({
                 {t.rig.summary(
                   t.rig.categories[gen.rig.category]?.label ?? gen.rig.category,
                   gen.rig.clips.length,
+                )}
+              </span>
+            </p>
+          ) : null}
+          {gen.textureClean ? (
+            <p className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+              <PaintBucketIcon className="size-3.5 shrink-0 text-primary" />
+              <span className="truncate">
+                {t.textureClean.summary(
+                  t.textureClean.levels[gen.textureClean.level]?.label ??
+                    gen.textureClean.level,
                 )}
               </span>
             </p>
@@ -637,6 +696,15 @@ export function GenerationView({
                 <BrushIcon />
                 {t.gen.paint}
               </Button>
+            ) : null}
+            {gen.textured ? (
+              <TextureCleanMenu
+                gen={gen}
+                onCreated={(next) => {
+                  toast.success(t.textureClean.done);
+                  showVersion(next);
+                }}
+              />
             ) : null}
             {!gen.compress ? (
               <CompressMenu

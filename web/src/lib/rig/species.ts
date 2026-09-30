@@ -88,6 +88,32 @@ export const SPECIES: Species[] = [
     attacks: ["Attack_Bite", "Attack_Swipe", "Attack_TailSwipe", "Attack_Breath"],
   },
   {
+    // Two legs, the wings are its front limbs.
+    id: "wyvern",
+    archetype: "wingedQuadruped",
+    category: "quadruped",
+    options: { bipedal: true, armless: true, wings: true, jaw: true },
+    locomotion: ["Walk", "Run", "Fly", "Glide", "Wings_Fold", "Wings_Spread"],
+    attacks: ["Attack_Bite", "Attack_TailSwipe", "Attack_Breath"],
+  },
+  {
+    id: "fourWingedFlyer",
+    archetype: "bird",
+    category: "bird",
+    options: { wingPairs: 2 },
+    locomotion: ["Hop", "Fly", "Glide", "Wings_Fold", "Wings_Spread"],
+    attacks: ["Attack_Peck", "Attack_Pounce", "Attack_Dive"],
+  },
+  {
+    // Never lands: no legs, several wing pairs, a long tail that floats behind it.
+    id: "skyWyrm",
+    archetype: "bird",
+    category: "bird",
+    options: { wingPairs: 2, legless: true },
+    locomotion: ["Fly", "Glide", "Wings_Fold", "Wings_Spread"],
+    attacks: ["Attack_Peck", "Attack_Spin"],
+  },
+  {
     id: "snake",
     archetype: "serpent",
     category: "serpent",

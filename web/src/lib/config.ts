@@ -73,3 +73,7 @@ export const MAP_MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
 /** "Compress model" levels, lightest loss first (presets in src/server/compress.ts). */
 export const COMPRESS_LEVELS = ["light", "balanced", "strong", "ultra", "max"] as const;
 export type CompressLevel = (typeof COMPRESS_LEVELS)[number];
+
+/** "Clean texture" levels, gentlest first (presets in worker/texture_clean.py). */
+export const TEXTURE_CLEAN_LEVELS = ["light", "balanced", "strong"] as const;
+export type TextureCleanLevel = (typeof TEXTURE_CLEAN_LEVELS)[number];

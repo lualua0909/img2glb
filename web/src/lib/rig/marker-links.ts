@@ -31,6 +31,7 @@ export function markerLinks(category: RigCategory, ids: readonly string[]) {
   for (const side of ["L", "R"]) {
     const root = available.has(`wingRoot${side}`) ? `wingRoot${side}` : available.has("shoulders") ? "shoulders" : "chest";
     chain(root, `wingElbow${side}`, `wingWrist${side}`, `wingTip${side}`);
+    for (let i = 2; i <= 3; i++) chain(available.has("chest") ? "chest" : "back", `wing${i}Elbow${side}`, `wing${i}Wrist${side}`, `wing${i}Tip${side}`);
     chain(`finRoot${side}`, `finMid${side}`, `finTip${side}`);
     chain("head", `hornTip${side}`);
     for (let i = 1; i <= 4; i++) chain(`feelerRoot${i}${side}`, `feelerTip${i}${side}`);

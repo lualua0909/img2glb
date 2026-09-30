@@ -25,8 +25,17 @@ export type RigOptions = {
   horns: number;
   /** Two wings with shoulder, elbow and wrist joints, e.g. an angel or a western dragon. */
   wings: boolean;
+  /**
+   * Pairs of wings, front to back (animals with `wings`, birds): 2 or 3 for four- or six-winged flyers. Pair 1 is
+   * "Wing…", the others "Wing2…", "Wing3…".
+   */
+  wingPairs: number;
+  /** No legs at all: a flyer that never lands, e.g. a winged sea serpent (birds). */
+  legless: boolean;
   /** Walks on the hind legs, the front limbs are arms, e.g. a carnivorous dinosaur (animals). */
   bipedal: boolean;
+  /** With `bipedal`: no front limbs at all, e.g. a wyvern whose wings are its arms (animals). */
+  armless: boolean;
   /** Five editable neck links and a long tail, for sauropods. */
   longNeck: boolean;
   /** Four short legs along the body, e.g. an Asian dragon (serpents). */
@@ -53,7 +62,10 @@ export const DEFAULT_RIG_OPTIONS: RigOptions = {
   jaw: false,
   horns: 0,
   wings: false,
+  wingPairs: 1,
+  legless: false,
   bipedal: false,
+  armless: false,
   longNeck: false,
   legs: false,
   fins: false,
@@ -220,6 +232,26 @@ function extreme(m: ModelData, score: (v: Vector3) => number, pred: (v: Vector3)
 }
 
 /** Sign (+1/-1) of the end of `axis` whose top is higher: animals and birds usually hold their head up. */
+/** 1 when the far end of `axis` is the thicker (solid rather than thin fins or sheets) of the two ends, else -1. */
+function thickerEnd(m: ModelData, axis: Vector3) {
+  const th = thickness(m);
+  const { min, len } = range(m, axis);
+  const v = new Vector3();
+  const [front, back] = [
+    [0, 0],
+    [0, 0],
+  ];
+  for (let i = 0; i < m.count; i++) {
+    const s = (vertexAt(m, i, v).dot(axis) - min) / len;
+    const end = s > 0.9 ? front : s < 0.1 ? back : null;
+    if (end) {
+      end[0] += th(i);
+      end[1]++;
+    }
+  }
+  return front[0] / Math.max(front[1], 1) >= back[0] / Math.max(back[1], 1) ? 1 : -1;
+}
+
 function higherEnd(m: ModelData, axis: Vector3) {
   const { min, len } = range(m, axis);
   let front = -Infinity;
@@ -298,22 +330,37 @@ const SIDES = [
   ["R", "Right"],
 ] as const;
 
+export const MAX_WING_PAIRS = 3;
+/** Marker prefix of a wing pair (1 = the front one). */
+const wingMarker = (pair: number) => `wing${pair > 1 ? pair : ""}`;
+/** Elbow, wrist and tip markers of every wing pair, left and right. */
+const wingIds = (pairs: number) =>
+  Array.from({ length: pairs }, (_, i) => ["Elbow", "Wrist", "Tip"].flatMap((j) => [`${wingMarker(i + 1)}${j}L`, `${wingMarker(i + 1)}${j}R`])).flat();
+
 /**
  * Wing chain from `root` through the elbow and wrist markers to the tip: fold, spread and flap need all three joints.
  * `mid` (a point on the body's mid-plane, and its lateral axis) gates the wing sideways, off the half of the body
- * between its root and the mid-plane.
+ * between its root and the mid-plane. `pair` picks the wing pair (1 = the front one).
  */
-function wingBones(k: Markers, s: string, parent: string, root: Vector3, mid?: { at: Vector3; lateral: Vector3 }) {
-  const [elbow, wrist, tip] = ["wingElbow", "wingWrist", "wingTip"].map((j) => k[j + s]);
+function wingBones(
+  k: Markers,
+  s: string,
+  parent: string,
+  root: Vector3,
+  mid?: { at: Vector3; lateral: Vector3 },
+  pair = 1,
+) {
+  const [elbow, wrist, tip] = ["Elbow", "Wrist", "Tip"].map((j) => k[`${wingMarker(pair)}${j}${s}`]);
+  const pre = `Wing${pair > 1 ? pair : ""}`;
   const wing = (b: BoneSpec): BoneSpec => {
     if (!mid) return gated(b, root, elbow);
     const dir = mid.lateral.clone().multiplyScalar(Math.sign(elbow.clone().sub(root).dot(mid.lateral)) || 1);
     return { ...b, gate: { origin: root, dir, fade: 0.5 * root.clone().sub(mid.at).dot(dir) } };
   };
   return [
-    wing(bone(`WingUpper${s}`, parent, root, elbow)),
-    wing(bone(`WingFore${s}`, `WingUpper${s}`, elbow, wrist)),
-    wing(bone(`WingHand${s}`, `WingFore${s}`, wrist, tip)),
+    wing(bone(`${pre}Upper${s}`, parent, root, elbow)),
+    wing(bone(`${pre}Fore${s}`, `${pre}Upper${s}`, elbow, wrist)),
+    wing(bone(`${pre}Hand${s}`, `${pre}Fore${s}`, wrist, tip)),
   ];
 }
 
@@ -843,9 +890,9 @@ const quadruped: Template = {
     "hips",
     "belly",
     "tailTip",
-    ...(o.bipedal ? ["elbow", "wrist"] : ["frontKnee", "frontFoot"]).flatMap((j) => [`${j}L`, `${j}R`]),
+    ...(o.bipedal ? (o.armless ? [] : ["elbow", "wrist"]) : ["frontKnee", "frontFoot"]).flatMap((j) => [`${j}L`, `${j}R`]),
     ...["rearKnee", "rearFoot"].flatMap((j) => [`${j}L`, `${j}R`]),
-    ...(o.wings ? ["wingElbow", "wingWrist", "wingTip"].flatMap((j) => [`${j}L`, `${j}R`]) : []),
+    ...(o.wings ? wingIds(o.wingPairs) : []),
   ],
   frame: (_m, k) => frameOf(k.nose.clone().sub(k.tailTip)),
   guess(m, o) {
@@ -935,12 +982,12 @@ const quadruped: Template = {
         k[id] = point;
       });
     }
-    if (o.bipedal) {
+    if (o.bipedal && !o.armless) {
       // Short arms hanging under the chest.
       const drop = shoulders.y - minY;
       k.elbowL = at(fr, front, footLat(rear), shoulders.y - 0.25 * drop);
       k.wristL = at(fr, front + 0.08 * len, footLat(rear), shoulders.y - 0.35 * drop);
-    } else {
+    } else if (!o.bipedal) {
       k.frontFootL = at(fr, front, footLat(front), footY);
       k.frontKneeL = at(fr, front, footLat(front), footY + 0.45 * (shoulders.y - footY));
     }
@@ -960,16 +1007,21 @@ const quadruped: Template = {
         ? // Tusks: forward and out to the side, below the skull (the trunk hangs in the middle).
           extreme(m, (p) => p.dot(F) + p.dot(L) - latC, (p) => onHead(p) && p.y < head.y && p.dot(L) > latC + 0.02 * h)
         : extreme(m, (p) => p.y + p.dot(L) - latC, (p) => onHead(p) && p.y > head.y - 0.1 * h && p.dot(L) > latC);
-    if (o.wings) {
-      const root = shoulders.clone().setY(backAt(front));
-      const tip =
-        halfWidth > 0.35 * len
-          ? extreme(m, (p) => p.dot(L), (p) => p.y > shoulders.y)
-          : at(fr, lerp(shoulders, hips, 0.8).dot(F), latC + 0.6 * halfWidth, root.y + 0.1 * h);
-      k.wingTipL = tip;
-      k.wingElbowL = lerp(root, tip, 0.35).addScaledVector(UP, 0.08 * h);
-      k.wingWristL = lerp(root, tip, 0.7).addScaledVector(UP, 0.04 * h);
-    }
+    if (o.wings)
+      for (let pair = 1; pair <= o.wingPairs; pair++) {
+        // Pairs one behind the other from the shoulders toward the hips; each takes the wing tip nearest its root.
+        const at0 = quadWingAt(pair, o.wingPairs);
+        const root = lerp(shoulders, hips, at0).setY(backAt(front + (rear - front) * at0));
+        const zone = (p: Vector3) => nearestPair(p.dot(F), (j) => front + (rear - front) * quadWingAt(j, o.wingPairs), o.wingPairs) === pair;
+        const tip =
+          halfWidth > 0.35 * len
+            ? extreme(m, (p) => p.dot(L), (p) => p.y > root.y - 0.15 * h && zone(p))
+            : at(fr, lerp(root, hips, 0.8).dot(F) - 0.2 * (pair - 1) * len, latC + 0.6 * halfWidth, root.y + 0.1 * h);
+        const w = wingMarker(pair);
+        k[`${w}TipL`] = tip;
+        k[`${w}ElbowL`] = lerp(root, tip, 0.35).addScaledVector(UP, 0.08 * h);
+        k[`${w}WristL`] = lerp(root, tip, 0.7).addScaledVector(UP, 0.04 * h);
+      }
     return mirrorMarkers(k, fr, m.center);
   },
   build(m, k, o, fr) {
@@ -1025,8 +1077,15 @@ const quadruped: Template = {
     } else bones.push(bone("Head", headParent, k.head, k.nose));
     if (k.jawTip) bones.push(jawBone(k, fr, upperLip));
     bones.push(...hornBones(k));
-    if (o.wings) for (const [s] of SIDES) bones.push(...wingBones(k, s, "Chest", lerp(k.shoulders, k[`wingElbow${s}`], 0.25)));
-    if (o.bipedal)
+    if (o.wings)
+      for (let pair = 1; pair <= o.wingPairs; pair++) {
+        const at0 = quadWingAt(pair, o.wingPairs);
+        const base = lerp(k.shoulders, k.hips, at0);
+        const parent = at0 < 0.25 ? "Chest" : at0 < 0.75 ? "Spine" : "Hips";
+        for (const [s] of SIDES)
+          bones.push(...wingBones(k, s, parent, lerp(base, k[`${wingMarker(pair)}Elbow${s}`], 0.25), undefined, pair));
+      }
+    if (o.bipedal && !o.armless)
       for (const [s] of SIDES) {
         const [elbow, wrist] = [k[`elbow${s}`], k[`wrist${s}`]];
         const shoulder = at(fr, k.shoulders.dot(F), elbow.dot(L), lerp(elbow, k.shoulders, 0.7).y);
@@ -1064,6 +1123,19 @@ const quadruped: Template = {
     return { bones, skin: { mode: "heat" } };
   },
 };
+
+/** The wing pair (1…`pairs`) whose root, at `rootAt(pair)` along the body, is nearest to `s`. */
+function nearestPair(s: number, rootAt: (pair: number) => number, pairs: number) {
+  let best = 1;
+  for (let j = 2; j <= pairs; j++) if (Math.abs(s - rootAt(j)) < Math.abs(s - rootAt(best))) best = j;
+  return best;
+}
+
+/** Where wing pair `pair` of `pairs` roots on a bird: 0 at the chest, 1 at the tail tip. */
+const birdWingAt = (pair: number, pairs: number) => (pairs > 1 ? (0.5 * (pair - 1)) / (pairs - 1) : 0);
+
+/** Where wing pair `pair` of `pairs` roots on an animal: 0 at the shoulders, 1 at the hips. */
+const quadWingAt = (pair: number, pairs: number) => (pairs > 1 ? (0.85 * (pair - 1)) / (pairs - 1) : 0);
 
 // ---------------------------------------------------------------- bird
 
@@ -1107,7 +1179,7 @@ function inside(m: ModelData, p: Vector3, axes: Vector3[]) {
 }
 
 const bird: Template = {
-  markers: () => ["head", "chest", "tailTip", ...["wingElbow", "wingWrist", "wingTip", "foot"].flatMap((j) => [`${j}L`, `${j}R`])],
+  markers: (o) => ["head", "chest", "tailTip", ...wingIds(o.wingPairs), ...(o.legless ? [] : ["footL", "footR"])],
   // Left/right pairs give the lateral axis: a bird flying toward the camera stands upright, so its head is above its
   // tail and the head -> tail line says little about where it faces.
   frame(_m, k) {
@@ -1116,7 +1188,7 @@ const bird: Template = {
       if (k[`${j}L`] && k[`${j}R`]) L.add(k[`${j}L`].clone().sub(k[`${j}R`]).setY(0));
     return L.lengthSq() > 1e-10 ? frameOf(L.normalize().cross(UP)) : frameOf(k.head.clone().sub(k.tailTip));
   },
-  guess(m) {
+  guess(m, o) {
     const h = m.size.y;
     const minY = m.box.min.y;
     // The mid-plane: the bird is mirror-symmetric across its lateral axis, which is its span when the wings are spread
@@ -1125,40 +1197,71 @@ const bird: Template = {
     const halfWidth = range(m, lat).len / 2;
     const onMid = (v: Vector3) => Math.abs(v.clone().sub(m.center).dot(lat)) < 0.15 * halfWidth;
     // Head: the top of the mid-plane (raised wings rise higher on the sides), and the side it leans to is the front.
-    const top = extreme(m, (v) => v.y, onMid);
+    // A flyer without legs is modeled in flight, level, and a wing may rise above its head: its head is the far end
+    // of the mid-plane, at the solid end of its length (a tail ends in thin fins or flukes).
     const ahead = lat.clone().cross(UP);
+    const top = o.legless
+      ? extreme(m, (v) => v.dot(ahead) * thickerEnd(m, ahead) * (o.flip ? -1 : 1), onMid)
+      : extreme(m, (v) => v.y, onMid);
     const fr = frameOf(ahead.multiplyScalar(Math.sign(top.clone().sub(m.center).dot(ahead)) || 1));
     const { forward: F, lateral: L } = fr;
     const { len } = range(m, F);
     const latC = m.center.dot(L);
-    const head = midDepth(m, top, L);
+    // A flyer's extreme point is its snout: the head (the Head bone runs on from it) sits a little behind.
+    const head = midDepth(m, o.legless ? top.clone().addScaledVector(F, -0.08 * len) : top, L);
     // Tail tip: the far end of the mid-plane from the head, behind it (a perched bird) or below it (an upright one).
     const tailTip = midDepth(m, extreme(m, (v) => v.distanceTo(top) - 0.3 * v.clone().sub(top).dot(F), onMid), L);
     const body = head.clone().sub(tailTip);
     const onPlane = (p: Vector3) => p.addScaledVector(L, latC - p.dot(L));
     const chest = midDepth(m, onPlane(lerp(head, tailTip, 0.4)), Math.abs(body.y) < 0.7 * body.length() ? UP : F);
     const spread = halfWidth > 0.35 * len;
-    const wingTipL = spread
-      ? extreme(m, (v) => v.dot(L), (v) => v.y > minY + 0.3 * h)
-      : at(fr, lerp(chest, tailTip, 0.6).dot(F), latC + 0.6 * halfWidth, chest.y);
+    // Wing pairs one behind the other from the chest toward the tail; each takes the wing tip nearest its root.
+    const rootS = (pair: number) => lerp(chest, tailTip, birdWingAt(pair, o.wingPairs)).dot(F);
+    const zone = (pair: number) => (v: Vector3) => nearestPair(v.dot(F), rootS, o.wingPairs) === pair;
+    // In flight the wings may be raised, lowered or spread, their roots side by side: the tips are the points on the
+    // left farthest from the body (head -> chest -> tail tip, so a drooping tail is body), each well away from the
+    // ones before, front to back. Not the head's feelers or the tail's flukes.
+    const path = [new Line3(head, chest), new Line3(chest, tailTip)];
+    const offBody = (v: Vector3) => Math.min(...path.map((l) => v.distanceTo(l.closestPointToPoint(v, true, new Vector3()))));
+    const trunk = (v: Vector3) => v.dot(F) < head.dot(F) - 0.1 * len && v.dot(F) > tailTip.dot(F) + 0.2 * len;
+    const flightTips: Vector3[] = [];
+    if (o.legless) {
+      for (let pair = 1; pair <= o.wingPairs; pair++) {
+        const apart = flightTips.length ? 0.7 * offBody(flightTips[0]) : 0;
+        // Raised wings meet above the back: a little past the mid-plane still counts as the left.
+        flightTips.push(
+          extreme(m, offBody, (v) => v.dot(L) > latC - 0.1 * halfWidth && trunk(v) && flightTips.every((t) => t.distanceTo(v) > apart)),
+        );
+      }
+      flightTips.sort((a, b) => b.dot(F) - a.dot(F));
+    }
+    const wingTip = (pair: number) =>
+      o.legless
+        ? flightTips[pair - 1]
+        : spread
+          ? extreme(m, (v) => v.dot(L), (v) => v.y > minY + 0.3 * h && zone(pair)(v))
+          : at(fr, lerp(chest, tailTip, 0.6).dot(F) - 0.2 * (pair - 1) * len, latC + 0.6 * halfWidth, chest.y);
     // Feet: the lowest points on the side, away from the tail (the lowest point of an upright bird).
     const side = (v: Vector3) =>
       v.dot(L) > latC + 0.02 * halfWidth && v.dot(L) < latC + 0.4 * halfWidth && v.distanceTo(tailTip) > 0.25 * body.length();
     const low = extreme(m, (v) => -v.y, side).y;
     const foot = centroid(m, (v) => side(v) && v.y < low + 0.06 * h);
-    const shoulder = birdShoulder(chest, wingTipL, L, h);
-    const k: Markers = {
-      head,
-      chest,
-      tailTip,
-      wingElbowL: inside(m, lerp(shoulder, wingTipL, 0.35), [F, UP]),
-      wingWristL: inside(m, lerp(shoulder, wingTipL, 0.7), [F, UP]),
-      wingTipL,
-      footL: foot ?? at(fr, chest.dot(F), latC + 0.3 * halfWidth, minY),
-    };
+    const k: Markers = { head, chest, tailTip };
+    for (let pair = 1; pair <= o.wingPairs; pair++) {
+      const tip = wingTip(pair);
+      // A flyer's wings root under the middle of each wing (the points near its tip, well off the body).
+      const blob = o.legless && pair > 1 ? centroid(m, (v) => v.distanceTo(tip) < offBody(tip) && offBody(v) > 0.3 * offBody(tip)) : null;
+      const base = blob ? new Line3(chest, tailTip).closestPointToPoint(blob, true, new Vector3()) : lerp(chest, tailTip, birdWingAt(pair, o.wingPairs));
+      const shoulder = birdShoulder(onPlane(base), tip, L, h);
+      const w = wingMarker(pair);
+      k[`${w}ElbowL`] = inside(m, lerp(shoulder, tip, 0.35), [F, UP]);
+      k[`${w}WristL`] = inside(m, lerp(shoulder, tip, 0.7), [F, UP]);
+      k[`${w}TipL`] = tip;
+    }
+    if (!o.legless) k.footL = foot ?? at(fr, chest.dot(F), latC + 0.3 * halfWidth, minY);
     return mirrorMarkers(k, fr, m.center);
   },
-  build(m, k, _o, fr) {
+  build(m, k, o, fr) {
     const h = m.size.y;
     const { forward: F, lateral: L } = fr;
     const len = range(m, F).len;
@@ -1173,10 +1276,18 @@ const bird: Template = {
       bone("Tail", "Hips", lerp(hips, k.tailTip, 0.4), k.tailTip),
     ];
     for (const [s] of SIDES) {
+      for (let pair = 1; pair <= o.wingPairs; pair++) {
+        // The front pair roots on the chest, the others on the body just ahead of their elbows.
+        const elbow = k[`${wingMarker(pair)}Elbow${s}`];
+        const t = pair > 1 ? new Line3(k.chest, k.tailTip).closestPointToPointParameter(elbow, true) * 0.8 : 0;
+        const base = lerp(k.chest, k.tailTip, t);
+        const root = birdShoulder(base, elbow, L, h, 0.5);
+        bones.push(...wingBones(k, s, t < 0.2 ? "Chest" : "Hips", root, { at: base, lateral: L }, pair));
+      }
+      if (o.legless) continue;
       const foot = k[`foot${s}`];
       const hip = at(fr, foot.dot(F), foot.dot(L), foot.y + 0.7 * (hips.y - foot.y));
       bones.push(
-        ...wingBones(k, s, "Chest", birdShoulder(k.chest, k[`wingElbow${s}`], L, h, 0.5), { at: k.chest, lateral: L }),
         bone(`Leg${s}`, "Hips", hip, foot.clone().addScaledVector(UP, 0.03 * h)),
         bone(`Foot${s}`, `Leg${s}`, foot.clone().addScaledVector(UP, 0.03 * h), foot.clone().addScaledVector(F, 0.05 * len)),
       );

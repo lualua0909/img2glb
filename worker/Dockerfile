@@ -32,7 +32,7 @@ RUN pip install "diffusers==0.30.0" "transformers==4.46.0" "accelerate==1.1.1" \
 RUN mkdir -p /opt/realesrgan && curl -fL -o "$REALESRGAN_CKPT" \
       https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth
 
-COPY server.py /opt/worker/server.py
+COPY server.py texture_clean.py /opt/worker/
 
 # Model weights (/data/models), job outputs (/data/worker-jobs) and the admin model config live under /data.
 # Mount the project's data/ folder (or a volume) there to persist them.

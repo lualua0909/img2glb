@@ -11,10 +11,12 @@ translated to English first), then the model is rebuilt from it, or only re-text
 
 API (all routes except /healthz require `Authorization: Bearer $WORKER_TOKEN`):
   POST   /v1/preprocess         raw image bytes -> image/png (denoised, background removed, centered)
+  POST   /v1/texture/clean      {level, base_color, metallic_roughness?, uv, indices} -> cleaned PNG maps (texture_clean.py)
   POST   /v1/jobs               {image_url | prompt, texture, num_inference_steps, guidance_scale,
                                  octree_resolution, face_count, texture_size, flat_shading, seed,
                                  edit_prompt, edit_image_guidance, mesh_url}   (edit_*/mesh_url: refinement)
-  GET    /v1/jobs/{id}          -> {id, status: queued|running|completed|failed, stage, queue_position, error, has_concept_image}
+  GET    /v1/jobs/{id}          -> {id, status: queued|running|completed|failed|cancelled, stage, queue_position, error, has_concept_image}
+  POST   /v1/jobs/{id}/cancel   queued: dropped; running: stops at the next diffusion step or stage
   GET    /v1/jobs/{id}/model    -> model/gltf-binary
   GET    /v1/jobs/{id}/concept  -> image/png (text mode: concept image, refinement: edited image)
   GET    /v1/admin/status       -> device, GPU memory, disk, queue, loaded config, load state
@@ -46,6 +48,7 @@ from torchvision_fix import apply_fix  # noqa: E402  basicsr (Real-ESRGAN) impor
 
 apply_fix()
 
+import base64  # noqa: E402
 import gc  # noqa: E402
 import hmac  # noqa: E402
 import ipaddress  # noqa: E402
@@ -502,6 +505,10 @@ class JobIn(BaseModel):
         return self
 
 
+class Cancelled(Exception):
+    pass
+
+
 @dataclass
 class Job:
     id: str
@@ -516,13 +523,23 @@ class Job:
     # Progress estimate: the stages this job runs and their expected seconds, fixed when it starts.
     expected: dict = field(default_factory=dict)
     stage_started: float = 0.0
+    cancel_requested: bool = False
+    # Auto-rig subprocess, killed on cancel.
+    proc: Optional[subprocess.Popen] = None
 
     @property
     def dir(self):
         return os.path.join(DATA_DIR, self.id)
 
+    def check_cancel(self, *_):
+        """Raises Cancelled when the user cancelled the job. Also used as a diffusion step callback."""
+        if self.cancel_requested:
+            raise Cancelled()
+
     def enter(self, stage: Optional[str]):
         """Moves to the next stage; the time the finished one took refines the estimate for later jobs."""
+        if stage is not None:
+            self.check_cancel()
         now = time.time()
         if self.stage in self.expected:
             key = stage_key(self.params, self.stage)
@@ -688,6 +705,8 @@ def run(models: Models, job: Job, sw: Stopwatch):
             octree_resolution=p.octree_resolution,
             num_chunks=200000,
             mc_algo="mc",
+            callback=job.check_cancel,
+            callback_steps=1,
         )[0]
 
         job.enter("Cleaning mesh")
@@ -735,7 +754,7 @@ def run_autorig(job: Job, sw: Stopwatch):
         rt.unload()
     job.enter("Rigging")
     t = time.time()
-    proc = subprocess.Popen(
+    proc = job.proc = subprocess.Popen(
         [SKINTOKENS_PYTHON, os.path.join(os.path.dirname(os.path.abspath(__file__)), "cuda", "skintokens_rig.py"),
          "--input", src, "--output", out],
         cwd=SKINTOKENS_REPO,
@@ -750,6 +769,7 @@ def run_autorig(job: Job, sw: Stopwatch):
         os.killpg(proc.pid, signal.SIGKILL)
         proc.wait()
         raise RuntimeError(f"auto-rig timed out after {AUTORIG_TIMEOUT}s")
+    job.check_cancel()  # killed by cancel_job
     sw.lap("rig", t)
     if proc.returncode != 0 or not os.path.isfile(out):
         tail = (output or "")[-2000:]
@@ -824,7 +844,10 @@ def gpu_loop():
         if not job:
             continue
         with rt.gpu_lock:  # waits while models reload
-            job.status = "running"
+            with jobs_lock:  # cancel_job checks the status under the same lock
+                if job.status == "cancelled":
+                    continue
+                job.status = "running"
             job.expected = expected_stages(job.params)
             t0 = time.time()
             job.timings["wait"] = round(t0 - job.created, 1)
@@ -847,6 +870,9 @@ def gpu_loop():
                 job.status = "completed"
                 job.enter(None)
                 log.info("job %s completed in %.1fs", job.id, time.time() - t0)
+            except Cancelled:
+                job.status = "cancelled"
+                log.info("job %s cancelled after %.1fs", job.id, time.time() - t0)
             except Exception as e:  # noqa: BLE001
                 job.status, job.error = "failed", str(e)[:500]
                 log.error("job %s failed: %s\n%s", job.id, e, traceback.format_exc())
@@ -861,7 +887,7 @@ def janitor():
         time.sleep(300)
         cutoff = time.time() - JOB_TTL_SECONDS
         with jobs_lock:
-            stale = [j for j in jobs.values() if j.created < cutoff and j.status in ("completed", "failed")]
+            stale = [j for j in jobs.values() if j.created < cutoff and j.status in ("completed", "failed", "cancelled")]
             for j in stale:
                 jobs.pop(j.id, None)
                 shutil.rmtree(j.dir, ignore_errors=True)
@@ -949,6 +975,58 @@ async def preprocess(request: Request):
     return Response(png, media_type="image/png")
 
 
+class TextureCleanIn(BaseModel):
+    """Maps are base64 image files (PNG/JPEG/WebP); `uv` is base64 little-endian float32 (u, v) pairs and `indices`
+    base64 little-endian uint32 triangle corners, for every primitive that samples the base color map."""
+
+    level: Literal["light", "balanced", "strong"]
+    base_color: str
+    metallic_roughness: Optional[str] = None
+    uv: str
+    indices: str
+
+
+MAX_TEXTURE_PIXELS = 8192 * 8192
+
+
+def decode_map(b64: str, keep_alpha: bool) -> np.ndarray:
+    img = Image.open(BytesIO(base64.b64decode(b64, validate=True)))
+    if img.width * img.height > MAX_TEXTURE_PIXELS:
+        raise ValueError("texture too large")
+    alpha = keep_alpha and ("A" in img.getbands() or "transparency" in img.info)
+    return np.asarray(img.convert("RGBA" if alpha else "RGB"))
+
+
+def png_b64(arr: np.ndarray) -> str:
+    buf = BytesIO()
+    Image.fromarray(arr).save(buf, "PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def clean_texture_request(body: TextureCleanIn) -> dict:
+    from texture_clean import clean_texture
+
+    uv = np.frombuffer(base64.b64decode(body.uv, validate=True), "<f4").reshape(-1, 2).astype(np.float64)
+    faces = np.frombuffer(base64.b64decode(body.indices, validate=True), "<u4").reshape(-1, 3).astype(np.int64)
+    if not len(faces) or faces.max() >= len(uv) or not np.isfinite(uv).all():
+        raise ValueError("invalid uv or indices")
+    base = decode_map(body.base_color, keep_alpha=True)
+    mr = decode_map(body.metallic_roughness, keep_alpha=False) if body.metallic_roughness else None
+    t = time.time()
+    base, mr = clean_texture(base, uv, faces, body.level, mr)
+    log.info("texture clean (%s, %dx%d) in %.1fs", body.level, base.shape[1], base.shape[0], time.time() - t)
+    return {"base_color": png_b64(base), "metallic_roughness": png_b64(mr) if mr is not None else None}
+
+
+@app.post("/v1/texture/clean", dependencies=[Depends(auth)])
+async def texture_clean(body: TextureCleanIn):
+    # CPU only (OpenCV), so it runs next to the GPU job instead of queueing behind it.
+    try:
+        return await run_in_threadpool(clean_texture_request, body)
+    except (ValueError, OSError) as e:  # bad base64 / image / geometry, or UVs that cover no texels
+        raise HTTPException(422, str(e)[:200])
+
+
 @app.post("/v1/jobs", dependencies=[Depends(auth)], status_code=201)
 def create_job(body: JobIn):
     if body.rig_url and not autorig_available():
@@ -982,6 +1060,19 @@ def status(job_id: str):
         "has_concept_image": job.has_concept_image,
         "timings": job.timings,
     }
+
+
+@app.post("/v1/jobs/{job_id}/cancel", dependencies=[Depends(auth)])
+def cancel_job(job_id: str):
+    job = get_job(job_id)
+    with jobs_lock:
+        if job.status == "queued":
+            job.status = "cancelled"  # gpu_loop skips it when dequeued
+        elif job.status == "running":
+            job.cancel_requested = True
+            if job.proc and job.proc.poll() is None:
+                os.killpg(job.proc.pid, signal.SIGKILL)
+    return status(job_id)
 
 
 @app.get("/v1/jobs/{job_id}/model", dependencies=[Depends(auth)])

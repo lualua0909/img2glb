@@ -58,6 +58,11 @@ export type CompressInfo = {
   fromBytes: number;
 };
 
+/** A copy whose baked textures were cleaned up by the worker (see worker/texture_clean.py). */
+export type TextureCleanInfo = {
+  level: "light" | "balanced" | "strong";
+};
+
 export const generationMode = pgEnum("generation_mode", ["image", "text"]);
 export const generationStatus = pgEnum("generation_status", ["queued", "processing", "succeeded", "failed"]);
 
@@ -99,6 +104,7 @@ export const generation = pgTable(
     refine: jsonb("refine").$type<RefineOptions>(),
     rig: jsonb("rig").$type<RigInfo>(),
     compress: jsonb("compress").$type<CompressInfo>(),
+    textureClean: jsonb("texture_clean").$type<TextureCleanInfo>(),
     /** Worker timings (seconds per stage) and peak memory (GB), reported when the job finishes. */
     stats: jsonb("stats").$type<GenerationStats>(),
     /** Short lease so only one request advances a job at a time. */

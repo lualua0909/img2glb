@@ -7,11 +7,11 @@ export async function getCredits(userId: string) {
   return row?.credits ?? 0;
 }
 
-export async function listGenerations(userId: string, limit = 60) {
+// No row limit: the library groups versions into one card per rootId, so a row cap would hide older models.
+export async function listGenerations(userId: string) {
   return db.query.generation.findMany({
     where: eq(schema.generation.userId, userId),
     orderBy: desc(schema.generation.createdAt),
-    limit,
   });
 }
 

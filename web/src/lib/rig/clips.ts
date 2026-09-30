@@ -246,6 +246,80 @@ function simulateChains(r: Rig, chains: Chain[], duration: number, frames: numbe
   return run(true);
 }
 
+/** Long appendage that drifts on its own (a feeler, a long tail): its links (base first) and the most each turns. */
+type Waft = { bones: string[]; amp: number; seed: number };
+
+/** Every feeler, and the tail when it is long (serpents and fish are all tail: their swim already waves it). */
+function waftsOf(r: Rig): Waft[] {
+  const out: Waft[] = [];
+  let seed = 1;
+  for (const name of r.names) {
+    const f = /^Feeler(\d+)_1([LR])$/.exec(name);
+    if (f) out.push({ bones: [1, 2, 3].map((j) => `Feeler${f[1]}_${j}${f[2]}`), amp: 0.14, seed: seed++ });
+  }
+  if (r.plan.category === "serpent" || r.plan.category === "fish") return out;
+  const tail = r.names.filter((n) => /^Tail\d*$/.test(n));
+  const reach = tail.reduce((a, n) => {
+    const b = r.plan.bones[r.index.get(n)!];
+    return a + b.head.distanceTo(b.tail);
+  }, 0);
+  if (tail.length && reach > 0.25 * Math.max(r.plan.length, r.plan.height))
+    out.push({ bones: tail, amp: 0.3 / tail.length, seed: seed++ });
+  return out;
+}
+
+/** Deterministic pseudo-random number in [0, 1). */
+const hash = (n: number) => {
+  const x = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+  return x - Math.floor(x);
+};
+
+/**
+ * Slow random drift on top of a pose, so feelers and long tails float and flutter (huyền ảo) even when the body
+ * holds still: each link bends about the two axes across it by a few incommensurate sines with random phases, the
+ * wave running out to the tip. A looping clip gets whole cycles only (and gentler for the faster ones it forces).
+ */
+function wafted(r: Rig, duration: number, pose: (t: number, P: Poser) => void, loops: boolean) {
+  const wafts = waftsOf(r);
+  if (!wafts.length) return pose;
+  const U = r.plan.frame.up;
+  const L = r.plan.frame.lateral;
+  const terms = wafts.map((w) =>
+    [0, 1].map((axis) =>
+      [0.23, 0.41, 0.67].map((hz, j) => {
+        const f = loops ? Math.max(1, Math.round(hz * duration)) / duration : hz;
+        const gain = [0.55, 0.3, 0.15][j] * Math.min(1, hz / f);
+        return { w: TAU * f, gain, phase: TAU * hash(w.seed * 17 + axis * 5 + j) };
+      }),
+    ),
+  );
+  return (t: number, P: Poser) => {
+    pose(t, P);
+    wafts.forEach((w, wi) =>
+      w.bones.forEach((b, i) => {
+        if (!P.has(b)) return;
+        const d = P.dir(b);
+        const a = new Vector3().crossVectors(d, U);
+        if (a.lengthSq() < 1e-4) a.crossVectors(d, L);
+        a.normalize();
+        const c = new Vector3().crossVectors(d, a).normalize();
+        const lag = 0.9 * i;
+        [a, c].forEach((axis, k) =>
+          P.rot(b, axis, w.amp * terms[wi][k].reduce((s, n) => s + n.gain * Math.sin(n.w * t + n.phase - lag), 0)),
+        );
+      }),
+    );
+  };
+}
+
+/** Whether a pose ends where it starts (a looping clip). */
+function loopsOf(r: Rig, duration: number, pose: (t: number, P: Poser) => void) {
+  const [A, B] = [new Poser(r), new Poser(r)];
+  pose(0, A);
+  pose(duration, B);
+  return A.q.every((q, i) => Math.abs(q.dot(B.q[i])) > 0.9999 && A.p[i].distanceTo(B.p[i]) < 1e-3 * r.plan.height);
+}
+
 /** Turns each link of a chain from its posed direction to the simulated one, base first. */
 function applyChain(P: Poser, bones: string[], dirs: Vector3[]) {
   bones.forEach((b, i) => {
@@ -266,7 +340,8 @@ function aim(P: Poser, b: string, target: Vector3, amount = 1) {
   if (len > 1e-6) P.rot(b, axis.divideScalar(len), amount * Math.atan2(len, cur.dot(t)));
 }
 
-function bake(r: Rig, name: string, duration: number, pose: (t: number, P: Poser) => void, mirror = false): AnimationClip {
+function bake(r: Rig, name: string, duration: number, posed: (t: number, P: Poser) => void, mirror = false): AnimationClip {
+  const pose = wafted(r, duration, posed, loopsOf(r, duration, posed));
   const frames = Math.max(2, Math.round(duration * 30) + 1);
   const times = new Float32Array(frames);
   const n = r.names.length;
@@ -401,18 +476,30 @@ const spinAttack = (k: Kit, extra?: (P: Poser, e: number) => void) =>
 
 /** Attack clip name -> the body part and bones that deal the damage, and when (seconds). */
 type AttackTable = Record<string, [organ: AttackOrgan, bones: string[] | RegExp, active: [number, number]]>;
-/** Marks the attack clips found in `table` (only the bones the rig has count), unless they already have one. */
+/**
+ * Marks the attack clips found in `table` (only the bones the rig has count), unless they already have one. An attack
+ * whose organ the rig lacks (a claw swipe without front limbs, a talon dive without legs) is dropped.
+ */
 const marked = (k: Kit, clips: RigClip[], table: AttackTable): RigClip[] =>
-  clips.map((c) => {
+  clips.flatMap((c) => {
     const a = table[c.clip.name];
-    if (!a || c.attack) return c;
+    if (!a || c.attack) return [c];
     const bones = a[1] instanceof RegExp ? k.bones(a[1]) : a[1].filter((b) => k.r.index.has(b));
-    return { ...c, attack: { organ: a[0], bones, active: a[2] } };
+    return bones.length ? [{ ...c, attack: { organ: a[0], bones, active: a[2] } }] : [];
   });
 
 // ---------------------------------------------------------------- wings (birds, dragons)
 
 const WING = ["WingUpper", "WingFore", "WingHand"];
+/**
+ * Bone prefix of each wing pair the rig has, front to back ("Wing", "Wing2", "Wing3"), with its phase lag: the pairs
+ * behind beat a little after the one in front, so a four- or six-winged flyer ripples instead of flapping as one.
+ */
+const wingPairs = (k: Kit) =>
+  ["Wing", "Wing2", "Wing3"].filter((w) => k.r.index.has(`${w}UpperL`) || k.r.index.has(`${w}UpperR`)).map((w, i) => ({
+    wing: [`${w}Upper`, `${w}Fore`, `${w}Hand`],
+    lag: 0.9 * i,
+  }));
 type WingPose = (i: number, out: Vector3) => Vector3;
 /** Wings open straight out to the sides. */
 const spreadPose =
@@ -431,21 +518,58 @@ const foldPose =
     k.F.clone().multiplyScalar(0.7).addScaledVector(out, 0.4).addScaledVector(k.U, 0.2),
     k.F.clone().multiplyScalar(-1).addScaledVector(out, 0.15),
   ][i];
-/** Poses both wings, `amount` of the way from where they are, shoulder first. */
+/** Poses every wing, `amount` of the way from where they are, shoulder first. */
 function aimWings(k: Kit, P: Poser, pose: WingPose, amount: number) {
-  for (const [s, sign] of [
-    ["L", 1],
-    ["R", -1],
-  ] as const)
-    WING.forEach((b, i) => aim(P, b + s, pose(i, k.L.clone().multiplyScalar(sign)), amount));
+  for (const { wing } of wingPairs(k))
+    for (const [s, sign] of [
+      ["L", 1],
+      ["R", -1],
+    ] as const)
+      wing.forEach((b, i) => aim(P, b + s, pose(i, k.L.clone().multiplyScalar(sign)), amount));
 }
 /** Flapping about the body axis, each joint lagging behind the one before it (up when `sin(ph)` > 0). */
 function flap(k: Kit, P: Poser, ph: number, amp: number) {
-  WING.forEach((b, i) => {
-    const a = [1, 0.5, 0.35][i] * amp * Math.sin(ph - 0.6 * i);
-    k.roll(P, `${b}L`, a);
-    k.roll(P, `${b}R`, -a);
-  });
+  for (const { wing, lag } of wingPairs(k))
+    wing.forEach((b, i) => {
+      const a = [1, 0.5, 0.35][i] * amp * Math.sin(ph - lag - 0.6 * i);
+      k.roll(P, `${b}L`, a);
+      k.roll(P, `${b}R`, -a);
+    });
+}
+/** Wingbeat phase, warped so the downstroke (0 -> π) takes 40% of the beat and the upstroke the rest. */
+const stroke = (ph: number) => ph + 0.35 * (1 - Math.cos(ph));
+/**
+ * Flapping flight after a real wingbeat: a quick, powerful downstroke and a slower upstroke on which the wing folds
+ * at the elbow and wrist (forearm and hand sweep back). Each joint lags the one before it, so the wing bends like a
+ * whip: the tips trail up on the way down and hang down on the way up. `ph` 0 = wings at the top; `amp` is the
+ * shoulder's swing either side of a slight upward bias, `fold` how far the upstroke folds the wing.
+ */
+function wingbeat(k: Kit, P: Poser, beat: number, amp: number, fold = 1) {
+  for (const { wing, lag } of wingPairs(k)) {
+    const ph = beat - lag;
+    // Folded most just after the bottom of the stroke, open again by the top.
+    const f = fold * ((1 + Math.cos(stroke(ph) - 1.2 * Math.PI)) / 2) ** 2;
+    for (const [s, sign] of [
+      ["L", 1],
+      ["R", -1],
+    ] as const) {
+      // Sweep first, in the plane of the spread wing: the shoulder's swing below carries it along.
+      k.yaw(P, wing[1] + s, sign * 0.45 * f);
+      k.yaw(P, wing[2] + s, sign * 0.6 * f);
+      wing.forEach((b, i) =>
+        k.roll(P, b + s, sign * ([0.05, 0, 0][i] + [1, 0.4, 0.6][i] * amp * Math.cos(stroke(ph - [0, 0.6, 1.2][i])))),
+      );
+    }
+  }
+}
+/** Gliding wings: held out with a slight lift, flexing slowly in the air, the tips lagging the shoulders. */
+function soar(k: Kit, P: Poser, ph: number, amp: number) {
+  for (const { wing, lag } of wingPairs(k))
+    wing.forEach((b, i) => {
+      const a = [0.12, 0, 0][i] + [1, 0.8, 1.2][i] * amp * Math.sin(ph - lag - 0.7 * i);
+      k.roll(P, `${b}L`, a);
+      k.roll(P, `${b}R`, -a);
+    });
 }
 
 const tap = (k: Kit) =>
@@ -1069,6 +1193,9 @@ function quadruped(k: Kit): RigClip[] {
   /** Tail sway: the same overall swing whatever the number of links. */
   const tail = (P: Poser, ph: number, a: number) =>
     tails.forEach((b, i) => yaw(P, b, ((3 * a) / tails.length) * Math.sin(ph - (2.4 * i) / tails.length)));
+  /** Tail waving up and down (in flight), the wave running from the base to the tip. */
+  const lash = (P: Poser, ph: number, a: number) =>
+    tails.forEach((b, i) => pitch(P, b, ((3 * a) / tails.length) * Math.sin(ph - (2.4 * i) / tails.length)));
   const necks = k.bones(/^Neck\d*$/);
   /** Distribute the bend across every neck link: positive lowers the head. */
   const neck = (P: Poser, a: number) => {
@@ -1228,22 +1355,39 @@ function quadruped(k: Kit): RigClip[] {
       // Wings (dragons): flight, and the fold / spread poses. Flying spreads them first, whatever their rest pose.
       ...(has("WingUpperL")
         ? [
-            k.clip("07", "Fly", 1, (_t, P, ph) => {
-              P.move("Root", k.up(0.3 * H + 0.04 * H * Math.cos(ph)));
-              neck(P, -0.1);
+            // A slow, heavy beat. The body rises on the downstroke and sinks on the upstroke, the nose lifting as
+            // the wings drive down; the neck gives with the bob so the head holds steady, the tail and legs trail.
+            k.clip("07", "Fly", 2, (_t, P, ph) => {
+              const s = stroke(ph);
+              P.move("Root", k.up(0.3 * H - 0.05 * H * Math.cos(s - 0.5)));
+              neck(P, -0.1 + 0.12 * Math.sin(s - 0.5));
+              pitch(P, "Head", -0.1 * Math.sin(s - 0.5));
+              yaw(P, "Head", 0.06 * Math.sin(ph));
               tuck(P);
+              for (const side of ["L", "R"]) {
+                pitch(P, `FrontLowerLeg${side}`, 0.1 * Math.sin(s - 1.2));
+                pitch(P, `RearUpperLeg${side}`, 0.12 * Math.sin(s - 1.2));
+                pitch(P, `RearLowerLeg${side}`, 0.15 * Math.sin(s - 1.8));
+              }
               aimWings(k, P, spreadPose(k), 1);
-              flap(k, P, ph, 0.7);
-              tail(P, ph, 0.15);
+              wingbeat(k, P, ph, 0.7);
+              lash(P, s - 1, 0.12);
+              tail(P, ph, 0.06);
+              pitch(P, "Hips", -0.06 * Math.sin(s - 0.2));
             }),
-            k.clip("07", "Glide", 3, (_t, P, ph) => {
-              P.move("Root", k.up(0.3 * H));
-              neck(P, -0.1);
+            // Riding the air: the body banks slowly from side to side, the head holding level and looking into the
+            // turn, the wings flexing and the tail swaying against the bank.
+            k.clip("07", "Glide", 4, (_t, P, ph) => {
+              P.move("Root", k.up(0.3 * H + 0.02 * H * Math.sin(2 * ph)));
+              neck(P, -0.1 + 0.03 * Math.sin(2 * ph));
+              yaw(P, "Head", 0.12 * Math.sin(ph));
+              roll(P, "Head", -0.12 * Math.sin(ph));
               tuck(P);
               aimWings(k, P, spreadPose(k), 1);
-              flap(k, P, 2 * ph, 0.06);
-              tail(P, ph, 0.1);
-              roll(P, "Root", 0.15 * Math.sin(ph));
+              soar(k, P, 2 * ph, 0.04);
+              lash(P, 2 * ph - 1, 0.04);
+              tail(P, ph + Math.PI - 0.8, 0.1);
+              roll(P, "Hips", 0.15 * Math.sin(ph));
             }),
             k.clip("07", "Wings_Fold", 1, (t, P) => aimWings(k, P, foldPose(k), keys(t, [[0, 0], [0.5, 1]]))),
             k.clip("07", "Wings_Spread", 1, (t, P) => aimWings(k, P, spreadPose(k), keys(t, [[0, 0], [0.5, 1]]))),
@@ -1518,21 +1662,31 @@ function bird(k: Kit): RigClip[] {
   const level = Math.max(0, Math.atan2(axis.dot(k.U), axis.dot(k.F)) - 0.2);
   const tuckLegs = (P: Poser) => ["LegL", "LegR"].forEach((b) => pitch(P, b, Math.max(0, 0.9 - level)));
   return marked(k, [
-    k.clip("07", "Fly", 0.6, (_t, P, ph) => {
-      P.move("Root", k.up(0.15 * H + 0.03 * H * Math.sin(ph)));
+    // The body rises on the downstroke and sinks on the upstroke; the neck gives with the bob so the head holds
+    // steady, and the tail trails.
+    k.clip("07", "Fly", 0.9, (_t, P, ph) => {
+      const s = stroke(ph);
+      P.move("Root", k.up(0.15 * H - 0.04 * H * Math.cos(s - 0.5)));
       pitch(P, "Hips", level);
       spread(P);
-      wings(P, ph, 0.9);
-      pitch(P, "Tail", -0.1 * Math.sin(ph));
+      wingbeat(k, P, ph, 0.75, 1.2);
+      pitch(P, "Neck", 0.12 * Math.sin(s - 0.5));
+      pitch(P, "Head", -0.12 * Math.sin(s - 0.5));
+      pitch(P, "Tail", -0.12 * Math.sin(s - 1));
       tuckLegs(P);
+      pitch(P, "Hips", -0.05 * Math.sin(s - 0.2));
     }),
-    k.clip("07", "Glide", 3, (_t, P, ph) => {
-      P.move("Root", k.up(0.15 * H));
+    // Riding the air: the body banks slowly from side to side, the head holding level, the wings flexing.
+    k.clip("07", "Glide", 4, (_t, P, ph) => {
+      P.move("Root", k.up(0.15 * H + 0.015 * H * Math.sin(2 * ph)));
       pitch(P, "Hips", level);
       spread(P);
-      wings(P, 2 * ph, 0.08);
+      soar(k, P, 2 * ph, 0.04);
+      yaw(P, "Head", 0.12 * Math.sin(ph));
+      roll(P, "Head", -0.15 * Math.sin(ph));
+      pitch(P, "Tail", 0.05 * Math.sin(2 * ph - 1));
       tuckLegs(P);
-      roll(P, "Root", 0.2 * Math.sin(ph));
+      roll(P, "Hips", 0.2 * Math.sin(ph));
     }),
     k.clip("07", "Wings_Fold", 1, (t, P) => aimWings(k, P, foldPose(k), keys(t, [[0, 0], [0.5, 1]]))),
     k.clip("07", "Wings_Spread", 1, (t, P) => spread(P, keys(t, [[0, 0], [0.5, 1]]))),
@@ -2071,11 +2225,14 @@ export function buildClips(plan: RigPlan): RigClip[] {
   if (plan.category === "humanoid" && plan.bones.some((b) => b.name === "WingUpperL")) {
     const flight = (P: Poser, t: number, glide: boolean) => {
       const ph = TAU * t / (glide ? 2 : 1);
+      // Flapping: wings at the top 35% of the way in, at the bottom by 75% (a quick downstroke), the tips lagging
+      // (see `wingbeat`).
+      const s = (i: number) => stroke(ph - 0.7 * Math.PI - 0.5 * i);
       // Upright hovering / gently leaning glide. Keep the head looking forward and
       // bring the arms down regardless of the model's original A/T-pose.
       k.pitch(P, "Chest", glide ? 0.18 : 0.08);
       k.pitch(P, "Head", glide ? -0.18 : -0.08);
-      P.move("Root", k.up(k.H * (0.12 + 0.015 * Math.sin(ph - Math.PI / 2))));
+      P.move("Root", k.up(k.H * (0.12 + (glide ? 0.015 * Math.sin(ph - Math.PI / 2) : -0.02 * Math.cos(s(0) - 0.5)))));
       for (const [side, suffix, sign] of [["Left", "L", 1], ["Right", "R", -1]] as const) {
         const out = k.L.clone().multiplyScalar(sign);
         aim(P, `${side}UpperArm`, k.up(-1).addScaledVector(out, 0.28).addScaledVector(k.F, 0.08), 1);
@@ -2086,7 +2243,7 @@ export function buildClips(plan: RigPlan): RigClip[] {
         // into an inverted wing. Both sides rise together about character-forward;
         // distal segments trail the shoulder slightly, in either facing direction.
         WING.forEach((bone, i) => {
-          const elevation = 0.12 + (glide ? 0.035 : 0.65) * Math.sin(ph - i * 0.22);
+          const elevation = 0.12 + (glide ? 0.035 * Math.sin(ph - i * 0.22) : 0.7 * Math.cos(s(i)));
           const direction = out.clone().multiplyScalar(Math.cos(elevation))
             .addScaledVector(k.U, Math.sin(elevation))
             .addScaledVector(k.F, -0.12 - i * 0.06);

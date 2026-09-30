@@ -1,8 +1,15 @@
 import "server-only";
 import { and, asc, count, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
-import { type CompressLevel, generationCost, MAX_TEXTURE_SIZE, type Quality, type UseCase } from "@/lib/config";
+import {
+  type CompressLevel,
+  generationCost,
+  MAX_TEXTURE_SIZE,
+  type Quality,
+  type TextureCleanLevel,
+  type UseCase,
+} from "@/lib/config";
 import { db, schema } from "@/lib/db";
-import type { CompressInfo, Generation, GenerationStats, RefineOptions, RigInfo } from "@/lib/db/schema";
+import type { CompressInfo, Generation, GenerationStats, RefineOptions, RigInfo, TextureCleanInfo } from "@/lib/db/schema";
 import { isLocal } from "@/lib/env";
 import { getProvider, PROVIDER } from "@/lib/providers";
 import { generationTimeoutMinutes } from "@/lib/generation-timeout";
@@ -11,6 +18,7 @@ import type { AppSettings } from "@/lib/settings";
 import { debitCredits, grantCredits } from "./credits";
 import { getSettings } from "./settings";
 import { compressGlb } from "./compress";
+import { cleanGlbTextures } from "./texture-clean";
 import { copyObject, deleteObjects, fetchBytes, keys, putObject, readObject, signedFileUrl, signedGetUrl } from "./storage";
 
 export class UserFacingError extends Error {
@@ -246,6 +254,23 @@ export async function failGeneration(id: string, reason: string) {
   });
 }
 
+/** User cancel: fail + refund right away, then stop the worker job (best effort, it is dropped either way). */
+export async function cancelGeneration(userId: string, id: string) {
+  const gen = await getUserGeneration(userId, id);
+  if (!gen) return null;
+  if (!ACTIVE.includes(gen.status as (typeof ACTIVE)[number]))
+    throw new UserFacingError("This generation is no longer running", 409);
+  await failGeneration(id, "Cancelled.");
+  if (gen.providerState) {
+    try {
+      await getProvider(gen.provider).cancel(gen.providerState);
+    } catch (err) {
+      console.warn(`[generation ${id}] worker cancel failed`, err);
+    }
+  }
+  return (await getUserGeneration(userId, id))!;
+}
+
 async function acquireLease(id: string) {
   const [row] = await db
     .update(schema.generation)
@@ -378,22 +403,50 @@ export async function createRiggedVersion(userId: string, parentId: string, byte
   return insertVersion(parent, bytes, { rig });
 }
 
+/** The stored GLB of a finished model. */
+async function readModel(gen: Generation) {
+  if (gen.status !== "succeeded" || !gen.modelKey) throw new UserFacingError("Model is not ready", 409);
+  return readObject(gen.modelKey).catch((err) => {
+    if (err?.code === "ENOENT") throw new UserFacingError("Model file is missing on the server", 404);
+    throw err;
+  });
+}
+
 /** Saves a smaller, lossy copy of a finished model as a new version (no provider job, no credits). */
 export async function createCompressedVersion(userId: string, parentId: string, level: CompressLevel) {
   const parent = await getUserGeneration(userId, parentId);
   if (!parent) return null;
-  if (parent.status !== "succeeded" || !parent.modelKey) throw new UserFacingError("Model is not ready", 409);
-  const original = await readObject(parent.modelKey).catch((err) => {
-    if (err?.code === "ENOENT") throw new UserFacingError("Model file is missing on the server", 404);
-    throw err;
-  });
+  const original = await readModel(parent);
   const bytes = await compressGlb(original, level);
   if (bytes.byteLength >= original.byteLength) throw new UserFacingError("This model is already compressed", 409);
   return insertVersion(parent, bytes, { rig: parent.rig, compress: { level, fromBytes: original.byteLength } });
 }
 
+/**
+ * Saves a copy of a finished model with cleaned textures (smears, blotches and seam bleeding removed by the worker,
+ * see worker/texture_clean.py) as a new version (no credits). Runs on the worker's CPU, next to any GPU job.
+ */
+export async function createTextureCleanVersion(userId: string, parentId: string, level: TextureCleanLevel) {
+  const parent = await getUserGeneration(userId, parentId);
+  if (!parent) return null;
+  const original = await readModel(parent);
+  let bytes: Uint8Array | null;
+  try {
+    bytes = await cleanGlbTextures(original, level);
+  } catch (err) {
+    console.error(`[generation ${parentId}] texture clean failed`, err);
+    throw new UserFacingError("Texture cleaning service is unavailable right now. Please retry.", 503);
+  }
+  if (!bytes) throw new UserFacingError("This model has no texture to clean", 409);
+  return insertVersion(parent, bytes, { rig: parent.rig, textureClean: { level } });
+}
+
 /** Insert a finished version of `parent` holding `bytes` as its model. */
-async function insertVersion(parent: Generation, bytes: Uint8Array, extra: { rig: RigInfo | null; compress?: CompressInfo }) {
+async function insertVersion(
+  parent: Generation,
+  bytes: Uint8Array,
+  extra: { rig: RigInfo | null; compress?: CompressInfo; textureClean?: TextureCleanInfo },
+) {
   const { userId } = parent;
   const id = crypto.randomUUID();
   const modelKey = keys.model(userId, id);
@@ -483,6 +536,7 @@ export type GenerationDTO = {
   refine: RefineOptions | null;
   rig: RigInfo | null;
   compress: CompressInfo | null;
+  textureClean: TextureCleanInfo | null;
   stats: GenerationStats | null;
 };
 
@@ -517,11 +571,15 @@ export async function toDTO(g: Generation): Promise<GenerationDTO> {
     refine: g.refine,
     rig: g.rig,
     compress: g.compress,
+    textureClean: g.textureClean,
     stats: g.stats,
   };
 }
 
-export type VersionDTO = Pick<GenerationDTO, "id" | "status" | "inputImageUrl" | "refine" | "rig" | "compress" | "createdAt">;
+export type VersionDTO = Pick<
+  GenerationDTO,
+  "id" | "status" | "inputImageUrl" | "refine" | "rig" | "compress" | "textureClean" | "createdAt"
+>;
 
 /** Every version of a model (the original and its refinements), oldest first. */
 export async function listVersions(userId: string, gen: Generation): Promise<VersionDTO[]> {
@@ -541,6 +599,7 @@ export async function listVersions(userId: string, gen: Generation): Promise<Ver
       refine: g.refine,
       rig: g.rig,
       compress: g.compress,
+      textureClean: g.textureClean,
       createdAt: g.createdAt.toISOString(),
     })),
   );

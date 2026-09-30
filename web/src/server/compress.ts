@@ -38,7 +38,7 @@ const PRESETS: Record<
 
 let io: Promise<NodeIO> | undefined;
 
-function getIO() {
+export function getIO() {
   io ??= (async () => {
     const [encoder, decoder] = await Promise.all([draco3d.createEncoderModule(), draco3d.createDecoderModule()]);
     await MeshoptSimplifier.ready;
