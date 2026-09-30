@@ -11,7 +11,7 @@ preview and GLB · STL · OBJ · USDZ export.
 | `web/` | Next.js 16 SaaS: studio, viewer, billing (VietQR), admin CMS — see [`web/README.md`](web/README.md) |
 | `worker/` | GPU inference backend wrapping upstream Hunyuan3D — see [`worker/README.md`](worker/README.md) |
 | `worker/map/` | Game map image → layered 3D scene (terrain, water, instanced props) — see [`worker/map/README.md`](worker/map/README.md) |
-| `Hunyuan3D-2.1/` | Upstream checkout as a git submodule (pinned in `.gitmodules`) |
+| `Hunyuan3D-2.1/` | Vendored upstream (commit `82920d6`) with `worker/mac/hunyuan3d-2.1-mps.patch` applied |
 | `data/` | Runtime only (ignored): Postgres files, weights, inputs/outputs, worker jobs |
 | `docs/adr/` | Architecture decisions (engine choice, Hunyuan3D-2.1 only) |
 | `start.sh` / `shutdown.sh` | Start/stop everything locally |
@@ -25,7 +25,7 @@ preview and GLB · STL · OBJ · USDZ export.
 ## Quickstart
 
 ```bash
-git clone --recursive https://github.com/lualua0909/img2glb.git
+git clone https://github.com/lualua0909/img2glb.git
 cd img2glb
 
 # 1. Worker (once). Picks CUDA on NVIDIA hosts, MPS on Apple Silicon.
@@ -45,9 +45,6 @@ cd ..
 # 3. Run everything: Postgres (5433) + worker(s) + web (3000)
 ./start.sh
 ```
-
-Without `--recursive`, init the submodules once: `git submodule update --init --recursive`.
-The setup scripts do this automatically when `Hunyuan3D-2.1/.git` is missing.
 
 ## Docs
 

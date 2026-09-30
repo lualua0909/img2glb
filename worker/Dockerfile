@@ -1,6 +1,6 @@
 # GPU worker: Hunyuan3D-2.1 shape + PBR texture + text-to-image.
 # Needs an NVIDIA GPU with >= 32 GB VRAM for shape + texture (upstream: 10 GB shape, 21 GB texture, 29 GB both).
-# Build from worker/: docker build -t hy3d-worker .
+# Build from the repo root (needs the vendored Hunyuan3D-2.1/): docker build -f worker/Dockerfile -t hy3d-worker .
 FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=1 PYTHONUNBUFFERED=1 \
@@ -12,15 +12,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu124
 
-# Same commit as the ../Hunyuan3D-2.1 submodule, with the device-agnostic patch (see mac/README.md).
+# Vendored Hunyuan3D-2.1, device-agnostic patch already applied (see mac/README.md).
 WORKDIR /opt
-COPY mac/hunyuan3d-2.1-mps.patch /opt/hunyuan3d-2.1.patch
-RUN git clone https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1.git \
-    && git -C Hunyuan3D-2.1 checkout 82920d643c0dc2f7bfd7255f45f62d386edfe60c \
-    && git -C Hunyuan3D-2.1 apply /opt/hunyuan3d-2.1.patch
+COPY Hunyuan3D-2.1 /opt/Hunyuan3D-2.1
 
 # Upstream pins minus packages the worker never imports (cupy, bpy, deepspeed, gradio); same set as cuda/setup.sh.
-COPY requirements.txt /opt/worker/requirements.txt
+COPY worker/requirements.txt /opt/worker/requirements.txt
 RUN pip install "diffusers==0.30.0" "transformers==4.46.0" "accelerate==1.1.1" \
       "huggingface-hub==0.30.2" safetensors "numpy<2" scipy einops pandas "opencv-python<4.11" imageio scikit-image \
       "rembg[cpu]" realesrgan basicsr trimesh pymeshlab pygltflib xatlas omegaconf pyyaml configargparse tqdm psutil \
@@ -32,7 +29,7 @@ RUN pip install "diffusers==0.30.0" "transformers==4.46.0" "accelerate==1.1.1" \
 RUN mkdir -p /opt/realesrgan && curl -fL -o "$REALESRGAN_CKPT" \
       https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth
 
-COPY server.py texture_clean.py /opt/worker/
+COPY worker/server.py worker/texture_clean.py /opt/worker/
 
 # Model weights (/data/models), job outputs (/data/worker-jobs) and the admin model config live under /data.
 # Mount the project's data/ folder (or a volume) there to persist them.

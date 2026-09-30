@@ -31,7 +31,7 @@ On CUDA the worker keeps upstream's quality defaults (paints 9 views at 768 px, 
 ## Run
 
 ```bash
-docker build -t hy3d-worker .
+docker build -f Dockerfile -t hy3d-worker ..   # context = repo root (vendored Hunyuan3D-2.1)
 docker run --gpus all -p 8081:8081 -v "$PWD/../data:/data" \
   -e WORKER_TOKEN=$(openssl rand -hex 24) \
   -e ALLOWED_IMAGE_HOSTS=<web-app-host> \

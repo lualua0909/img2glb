@@ -1,24 +1,15 @@
 #!/usr/bin/env bash
-# Sets up the worker on a CUDA host (Linux, NVIDIA GPU): worker/.venv, Hunyuan3D-2.1 with the same device-agnostic
-# patch as the Mac, the CUDA custom_rasterizer and the mesh inpaint extension.
+# Sets up the worker on a CUDA host (Linux, NVIDIA GPU): worker/.venv, the vendored Hunyuan3D-2.1 (device-agnostic
+# patch already applied, same code as the Mac), the CUDA custom_rasterizer and the mesh inpaint extension.
 # Requires uv, a C++ compiler and the CUDA toolkit (nvcc) matching TORCH_INDEX (default CUDA 12.8).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 HY="${HY21_REPO:-../Hunyuan3D-2.1}"
-PATCH="$PWD/mac/hunyuan3d-2.1-mps.patch" # keeps the CUDA paths; adds the device argument the worker passes
 PY=.venv/bin/python
 TORCH_INDEX="${TORCH_INDEX:-https://download.pytorch.org/whl/cu128}"
 
 command -v nvidia-smi >/dev/null || { echo "No NVIDIA GPU (nvidia-smi not found): on a Mac use mac/setup.sh" >&2; exit 1; }
 command -v nvcc >/dev/null || { echo "nvcc not found: install the CUDA toolkit (custom_rasterizer is a CUDA extension)" >&2; exit 1; }
-if [ ! -e "$HY/.git" ]; then
-  git -C .. submodule update --init -- "$(basename "$HY")" 2>/dev/null || git clone https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1.git "$HY"
-fi
-if git -C "$HY" apply --reverse --check "$PATCH" 2>/dev/null; then
-  echo "device patch already applied"
-else
-  git -C "$HY" apply "$PATCH"
-fi
 
 [ -x "$PY" ] || uv venv --python 3.12 .venv
 uv pip install --python "$PY" torch torchvision --index-url "$TORCH_INDEX"

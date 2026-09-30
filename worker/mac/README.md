@@ -9,8 +9,8 @@ no CUDA needed. Tested on an M4 with 32 GB, macOS 26.6.
 ./mac/setup.sh
 ```
 
-This creates `worker/.venv`, applies `hunyuan3d-2.1-mps.patch` to `../Hunyuan3D-2.1` (cloned or initialized as a
-submodule when missing), builds the CPU-only `custom_rasterizer` and the mesh inpaint extension, and downloads the
+This creates `worker/.venv` and, against the vendored `../Hunyuan3D-2.1` (upstream commit `82920d6` with
+`hunyuan3d-2.1-mps.patch` already applied; the patch file is kept as the record of local changes), builds the CPU-only `custom_rasterizer` and the mesh inpaint extension, and downloads the
 Real-ESRGAN checkpoint. It skips cupy, bpy, deepspeed and gradio (not used by the worker). Needs `uv` and the Xcode
 command line tools.
 

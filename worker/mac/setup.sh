@@ -1,21 +1,11 @@
 #!/usr/bin/env bash
-# Sets up the worker on Apple Silicon (MPS): worker/.venv, patched Hunyuan3D-2.1,
+# Sets up the worker on Apple Silicon (MPS): worker/.venv, the vendored (already patched) Hunyuan3D-2.1,
 # CPU-only custom_rasterizer and the mesh inpaint extension.
 # Requires uv (https://docs.astral.sh/uv/) and Xcode command line tools.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 HY="${HY21_REPO:-../Hunyuan3D-2.1}"
-PATCH="$PWD/mac/hunyuan3d-2.1-mps.patch"
 PY=.venv/bin/python
-
-if [ ! -e "$HY/.git" ]; then
-  git -C .. submodule update --init -- "$(basename "$HY")" 2>/dev/null || git clone https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1.git "$HY"
-fi
-if git -C "$HY" apply --reverse --check "$PATCH" 2>/dev/null; then
-  echo "macOS patch already applied"
-else
-  git -C "$HY" apply "$PATCH"
-fi
 
 [ -x "$PY" ] || uv venv --python 3.12 .venv
 # Upstream pins (requirements.txt), minus CUDA/Blender/training/demo packages: cupy, bpy, deepspeed, gradio.
