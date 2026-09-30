@@ -1,4 +1,4 @@
-# Installed on top of the Hunyuan3D-2 repo requirements (see Dockerfile)
+# Installed on top of the Hunyuan3D-2.1 dependencies (see mac/setup.sh, cuda/setup.sh, Dockerfile)
 fastapi>=0.115
 uvicorn>=0.30
 requests>=2.32

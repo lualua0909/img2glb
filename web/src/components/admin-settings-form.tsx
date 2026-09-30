@@ -8,14 +8,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { QUALITY_PRESETS, USE_CASES, type Quality } from "@/lib/config";
 import type { AppSettings } from "@/lib/settings";
 import { useI18n } from "./i18n-provider";
-
-type Provider = AppSettings["generation"]["provider"];
 
 function Section({ title, hint, children }: { title: string; hint?: ReactNode; children: ReactNode }) {
   return (
@@ -69,13 +66,11 @@ function NumberField(props: {
 export function AdminSettingsForm({
   initial,
   defaults,
-  providers,
   local,
   storage,
 }: {
   initial: AppSettings;
   defaults: AppSettings;
-  providers: Provider[];
   local: boolean;
   storage: string;
 }) {
@@ -115,7 +110,6 @@ export function AdminSettingsForm({
   }
 
   const g = s.generation;
-  const providerOptions = providers.includes(g.provider) ? providers : [g.provider, ...providers];
 
   return (
     <div className="flex flex-col gap-5">
@@ -142,21 +136,6 @@ export function AdminSettingsForm({
         ) : null}
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field id="provider" label={ts.provider} hint={ts.providerHint}>
-            <Select value={g.provider} disabled>
-              <SelectTrigger id="provider" className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {providerOptions.map((p) => (
-                  <SelectItem key={p} value={p} disabled={!providers.includes(p)}>
-                    {ts.providers[p] ?? p}
-                    {providers.includes(p) ? "" : ` — ${ts.notConfigured}`}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
           <Field id="guidance" label={ts.guidance} hint={ts.guidanceHint}>
             <Input
               id="guidance"

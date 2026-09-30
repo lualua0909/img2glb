@@ -314,6 +314,8 @@ export function GenerationView({
   const { t } = useI18n();
   const router = useRouter();
   const [gen, setGen] = useState(initial);
+  // Set while a preview weapon is held in the viewer: downloads include it.
+  const [weaponExport, setWeaponExport] = useState<{ run: () => Promise<ArrayBuffer> } | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [painting, setPainting] = useState(false);
   const [emission, setEmission] = useState(false);
@@ -461,6 +463,7 @@ export function GenerationView({
                 src={modelRevision ? `${gen.modelUrl}${gen.modelUrl.includes("?") ? "&" : "?"}revision=${modelRevision}` : gen.modelUrl}
                 fileBytes={gen.modelBytes}
                 baseName={baseName}
+                onWeaponExport={(run) => setWeaponExport(run ? { run } : null)}
                 onSaveModel={async (glb) => {
                   const res = await fetch(`/api/generations/${gen.id}/model`, {
                     method: "PUT",
@@ -578,7 +581,6 @@ export function GenerationView({
               {gen.textured ? t.gen.textured : t.gen.shapeOnly}
             </Badge>
             {[
-              t.engines[gen.engine] ?? gen.engine,
               t.quality[gen.quality]?.label ?? gen.quality,
               t.gen.seed(gen.seed),
               gen.cost > 0 ? t.common.credits(gen.cost) : null,
@@ -654,6 +656,7 @@ export function GenerationView({
               modelUrl={gen.modelUrl!}
               downloadUrl={gen.modelDownloadUrl!}
               baseName={baseName}
+              withWeapons={weaponExport?.run}
             />
           </div>
         ) : null}

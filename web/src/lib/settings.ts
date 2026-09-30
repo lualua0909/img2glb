@@ -5,7 +5,6 @@ import { CREDIT_COST, MAX_FACE_COUNT, MIN_FACE_COUNT, QUALITY_PRESETS, USE_CASES
 
 const QUALITY_IDS = Object.keys(QUALITY_PRESETS) as [Quality, ...Quality[]];
 const USE_CASE_IDS = USE_CASES.map((u) => u.id) as [UseCase, ...UseCase[]];
-export const PROVIDERS = ["hunyuan", "hunyuan21"] as const;
 
 const credit = z.int().min(0).max(1000);
 const preset = z.object({
@@ -20,8 +19,7 @@ export const settingsSchema = z.object({
     /** Maintenance switch: reject new generations with `pausedMessage`. */
     paused: z.boolean(),
     pausedMessage: z.string().trim().max(200),
-    provider: z.enum(PROVIDERS),
-    /** null = worker default (5.0). */
+    /** null = worker default (7.5). */
     guidanceScale: z.number().min(1).max(20).nullable(),
   }),
   quality: z.record(z.enum(QUALITY_IDS), preset),
@@ -55,7 +53,6 @@ export function defaultSettings(e: EnvDefaults): AppSettings {
     generation: {
       paused: false,
       pausedMessage: DEFAULT_PAUSED_MESSAGE,
-      provider: "hunyuan",
       guidanceScale: null,
     },
     quality: Object.fromEntries(

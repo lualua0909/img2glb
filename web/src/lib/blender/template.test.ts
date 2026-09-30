@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { Document, NodeIO } from "@gltf-transform/core";
-import { AnimationMixer, BoxGeometry, Mesh, Vector3, type SkinnedMesh } from "three";
+import { AnimationMixer, BoxGeometry, Mesh, Quaternion, Vector3, type SkinnedMesh } from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { buildModelData } from "../rig/model";
 import { buildClips } from "../rig/clips";
@@ -97,6 +97,13 @@ test("sauropod has editable connected neck links, five tail links and usable req
     assert.ok(Array.from(track.values).every(Number.isFinite));
     assert.ok(Array.from(track.values).some((v, i, values) => i >= 4 && Math.abs(v - values[i % 4]) > 1e-6));
   }
+  // Looking around swings the upright neck sideways rather than twisting it about the vertical.
+  const look = clips.find(c => c.clip.name === "Idle_Look")!.clip.tracks.find(t => t.name === "Neck.quaternion")!;
+  const at = look.times.findIndex(t => t >= 2.6);
+  const q = new Quaternion().fromArray(Array.from(look.values.slice(4 * at, 4 * at + 4)));
+  const axis = new Vector3(q.x, q.y, q.z).normalize();
+  assert.ok(2 * Math.acos(Math.min(1, Math.abs(q.w))) > 0.1, "neck turns");
+  assert.ok(Math.abs(axis.dot(plan.frame.up)) < 0.5, `swing axis ${axis.toArray()}`);
   const legacy = planRig("quadruped", model, guessMarkers("quadruped", model, DEFAULT_RIG_OPTIONS), DEFAULT_RIG_OPTIONS);
   assert.ok(legacy.bones.filter(b => /^Neck\d*$/.test(b.name)).length <= 2);
 });

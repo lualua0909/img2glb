@@ -31,7 +31,6 @@ import { Progress as ProgressBar } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { useI18n } from "./i18n-provider";
 
@@ -44,7 +43,6 @@ type ModelConfig = {
   tex_subfolder: string;
   enable_t2i: boolean;
   t2i_model: string;
-  low_vram: boolean;
 };
 type Status = {
   device: string;
@@ -57,7 +55,7 @@ type Status = {
   pipeline?: { stage: PipelineStage; model: string; state: "active" | "standby" | "lazy" | "off" }[];
   jobs: Record<"queued" | "running" | "completed" | "failed", number>;
 };
-type PipelineStage = "shape" | "vae" | "texture" | "delight" | "dino" | "upscale" | "t2i" | "rembg" | "edit" | "translate";
+type PipelineStage = "shape" | "vae" | "texture" | "dino" | "upscale" | "t2i" | "rembg" | "edit" | "translate";
 type Download = {
   repo_id: string;
   subfolder: string;
@@ -87,12 +85,8 @@ function fmtBytes(n: number) {
 
 const ref = (repo: string, sub: string) => `${repo}|${sub}`;
 
-async function api<T>(engine: string, path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`/api/admin/worker/${path}`, {
-    cache: "no-store",
-    ...init,
-    headers: { ...init?.headers, "X-Engine": engine },
-  });
+async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`/api/admin/worker/${path}`, { cache: "no-store", ...init });
   const data = await res.json().catch(() => ({}));
   const detail = Array.isArray(data.detail) ? data.detail[0]?.msg : data.detail; // FastAPI errors
   if (!res.ok) throw new Error(data.error ?? detail ?? `Request failed (${res.status})`);
@@ -128,29 +122,7 @@ function Stat({ icon: Icon, tint, label, children }: { icon: LucideIcon; tint: s
   );
 }
 
-/** One tab per configured engine (Hunyuan3D 2.0 / 2.1), each talking to its own worker. */
-export function AdminModels({ configured, engines }: { configured: boolean; engines: string[] }) {
-  const { t } = useI18n();
-  const [engine, setEngine] = useState(engines[0] ?? "hunyuan");
-  return (
-    <div className="flex flex-col gap-5">
-      {engines.length > 1 ? (
-        <Tabs value={engine} onValueChange={setEngine}>
-          <TabsList className="w-full sm:w-auto">
-            {engines.map((e) => (
-              <TabsTrigger key={e} value={e}>
-                {t.engines[e] ?? e}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-      ) : null}
-      <EngineModels key={engine} engine={engine} configured={configured} />
-    </div>
-  );
-}
-
-function EngineModels({ configured, engine }: { configured: boolean; engine: string }) {
+export function AdminModels({ configured }: { configured: boolean }) {
   const { t } = useI18n();
   const tm = t.admin.models;
   const [status, setStatus] = useState<Status | null>(null);
@@ -163,7 +135,7 @@ function EngineModels({ configured, engine }: { configured: boolean; engine: str
 
   const refresh = useCallback(async () => {
     try {
-      const [s, m] = await Promise.all([api<Status>(engine, "status"), api<Models>(engine, "models")]);
+      const [s, m] = await Promise.all([api<Status>("status"), api<Models>("models")]);
       setStatus(s);
       setModels(m);
       setDraft((d) => d ?? s.config);
@@ -171,7 +143,7 @@ function EngineModels({ configured, engine }: { configured: boolean; engine: str
     } catch (e) {
       setError(e instanceof Error ? e.message : tm.workerFailed);
     }
-  }, [engine, tm.workerFailed]);
+  }, [tm.workerFailed]);
 
   const active =
     Boolean(status?.loading) ||
@@ -202,7 +174,7 @@ function EngineModels({ configured, engine }: { configured: boolean; engine: str
 
   const download = (repo_id: string, subfolder: string) =>
     act(`dl:${ref(repo_id, subfolder)}`, () =>
-      api(engine, "models/download", {
+      api("models/download", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ repo_id, subfolder }),
@@ -211,12 +183,12 @@ function EngineModels({ configured, engine }: { configured: boolean; engine: str
 
   const remove = (item: CatalogItem) =>
     act(`rm:${ref(item.repo_id, item.subfolder)}`, () =>
-      api(engine, `models?${new URLSearchParams({ repo_id: item.repo_id, subfolder: item.subfolder })}`, { method: "DELETE" }),
+      api(`models?${new URLSearchParams({ repo_id: item.repo_id, subfolder: item.subfolder })}`, { method: "DELETE" }),
     );
 
   const applyConfig = () =>
     act("config", () =>
-      api(engine, "config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(draft) }),
+      api("config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(draft) }),
     );
 
   if (!configured)
@@ -379,14 +351,12 @@ function EngineModels({ configured, engine }: { configured: boolean; engine: str
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {byKind("texture")
-                          .filter((i) => !i.subfolder.includes("delight"))
-                          .map((i) => (
-                            <SelectItem key={i.subfolder} value={ref(i.repo_id, i.subfolder)}>
-                              {i.label}
-                              {i.local_bytes ? "" : ` — ${tm.notDownloaded}`}
-                            </SelectItem>
-                          ))}
+                        {byKind("texture").map((i) => (
+                          <SelectItem key={i.subfolder} value={ref(i.repo_id, i.subfolder)}>
+                            {i.label}
+                            {i.local_bytes ? "" : ` — ${tm.notDownloaded}`}
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   </div>
@@ -396,7 +366,6 @@ function EngineModels({ configured, engine }: { configured: boolean; engine: str
                     [
                       ["enable_tex", tm.enableTex],
                       ["enable_t2i", tm.enableT2i(draft.t2i_model.split("/").pop() ?? "")],
-                      ["low_vram", tm.lowVram],
                     ] as const
                   ).map(([k, label]) => (
                     <label key={k} className="flex cursor-pointer items-center justify-between gap-3 px-4 py-3 text-sm font-medium">
@@ -496,7 +465,7 @@ function EngineModels({ configured, engine }: { configured: boolean; engine: str
                   <Input
                     id="repo"
                     className="font-mono"
-                    placeholder="tencent/Hunyuan3D-2mv"
+                    placeholder="tencent/Hunyuan3D-2.1"
                     value={custom.repo_id}
                     onChange={(e) => setCustom({ ...custom, repo_id: e.target.value.trim() })}
                   />

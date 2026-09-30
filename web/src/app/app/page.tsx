@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { Studio } from "@/components/studio";
 import { isLocal } from "@/lib/env";
-import { configuredProviders } from "@/lib/providers";
 import { getT } from "@/lib/i18n/server";
 import { requireUser } from "@/server/auth";
 import { getCredits } from "@/server/queries";
@@ -25,8 +24,6 @@ export default async function CreatePage() {
         faceCount,
         costs,
         pausedMessage: generation.paused ? generation.pausedMessage : null,
-        engines: configuredProviders(),
-        defaultEngine: generation.provider,
       }}
     />
   );

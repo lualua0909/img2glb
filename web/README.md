@@ -1,6 +1,6 @@
 # Forma3D — Image & Text to 3D SaaS
 
-A Next.js 16 + Tailwind v4 SaaS on top of [Tencent Hunyuan3D-2](https://github.com/Tencent-Hunyuan/Hunyuan3D-2).
+A Next.js 16 + Tailwind v4 SaaS on top of [Tencent Hunyuan3D-2.1](https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1).
 Users upload an image or type a prompt, get a textured GLB, preview it in 3D/AR and export GLB · STL · OBJ · USDZ.
 
 ## Architecture
@@ -57,7 +57,7 @@ Accounts listed in `ADMIN_EMAILS` get an **Admin** tab (everyone else gets a 404
   sign-up bonus, concurrent-job limit, job timeout. Secrets (keys, URLs, tokens) stay in env.
 - **Payments** — pending VietQR bank-transfer orders: confirm (adds credits) or cancel.
 - **Models** — talks to the GPU worker's admin API through `/api/admin/worker/*` (token stays server-side): GPU/VRAM/
-  disk status, download/delete Hunyuan3D-2 weights (shape, VAE, paint/delight, HunyuanDiT, or any HF repo) with
+  disk status, download/delete Hunyuan3D-2.1 weights (shape, VAE, PBR paint, DINOv2, HunyuanDiT, or any HF repo) with
   progress, and switch the active models with a hot reload. Needs `HUNYUAN_WORKER_URL` + `HUNYUAN_WORKER_TOKEN`.
 
 Admin accounts need a verified email (sign-in already requires one).
@@ -104,7 +104,7 @@ Generation needs the Hunyuan3D worker running (`../start.sh` starts it, on CUDA 
 
 1. **Postgres** (Neon, Supabase, RDS). Run `pnpm db:migrate` (or the `migrate` Docker target) on deploy.
 2. **Storage**: back up `data/outputs` (uploaded inputs + generated models).
-3. **Hunyuan3D worker**: deploy `../worker` on a GPU (≥16 GB VRAM), set `HUNYUAN_WORKER_URL` + `HUNYUAN_WORKER_TOKEN`.
+3. **Hunyuan3D worker**: deploy `../worker` on a GPU (≥32 GB VRAM for shape + PBR texture), set `HUNYUAN_WORKER_URL` + `HUNYUAN_WORKER_TOKEN`.
 4. **Auth (Firebase)**: create a project, enable the Email/Password (and optionally Google) providers, add your
    domain under Authentication → Settings → Authorized domains. Web app config → `NEXT_PUBLIC_FIREBASE_*`; a service
    account key → `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`. `NEXT_PUBLIC_*` values are
@@ -120,7 +120,7 @@ Generation needs the Hunyuan3D worker running (`../start.sh` starts it, on CUDA 
 
 Deploy: Vercel (zero config), or `docker build -t forma3d .` → `docker run -p 3000:3000 --env-file .env forma3d`.
 
-## Hunyuan3D license (Tencent Hunyuan 3D 2.0 Community License) — what this app already handles
+## Hunyuan3D license (Tencent Hunyuan 3D 2.1 Community License) — what this app already handles
 
 | Obligation | Where |
 |---|---|
@@ -140,4 +140,3 @@ Deploy: Vercel (zero config), or `docker build -t forma3d .` → `docker run -p 
 - Prompt/image moderation (e.g. an LLM or vision safety classifier) before submitting jobs — AUP compliance.
 - Error monitoring (Sentry) and product analytics.
 - Public share links / embeddable viewer, API keys for developers, subscriptions.
-- Multi-view input (Hunyuan3D-2mv) for higher-fidelity scans.

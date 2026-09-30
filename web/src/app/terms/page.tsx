@@ -10,7 +10,7 @@ export async function generateMetadata(): Promise<Metadata> {
 const license = (label: string) => <a href="/HUNYUAN3D_LICENSE.txt">{label}</a>;
 
 // TEMPLATE — have counsel review before launch. Sections marked (required) implement obligations
-// from the Tencent Hunyuan 3D 2.0 Community License (§3, §5) and must stay.
+// from the Tencent Hunyuan 3D 2.1 Community License (§3, §5) and must stay.
 function TermsEn() {
   return (
     <>
@@ -20,7 +20,7 @@ function TermsEn() {
       </p>
       <h2>1. The service</h2>
       <p>
-        {APP_NAME} generates 3D models from images and text using Tencent Hunyuan 3D 2.0. Tencent is not affiliated with,
+        {APP_NAME} generates 3D models from images and text using Tencent Hunyuan 3D 2.1. Tencent is not affiliated with,
         associated with, sponsoring, or endorsing {APP_NAME}.
       </p>
       <h2>2. Territory (required)</h2>
@@ -31,7 +31,7 @@ function TermsEn() {
       <h2>3. Use restrictions (required)</h2>
       <p>
         Your use of the service and of any output must comply with applicable laws (including trade compliance laws) and with
-        the Tencent Hunyuan 3D 2.0 Acceptable Use Policy (Exhibit A of the {license("license")}), which is incorporated into
+        the Tencent Hunyuan 3D 2.1 Acceptable Use Policy (Exhibit A of the {license("license")}), which is incorporated into
         these Terms. You must not use the service, or any output or results of it, to improve any other AI model. These
         restrictions apply to anyone you distribute outputs to, and you must pass this notice on to them.
       </p>
@@ -66,7 +66,7 @@ function TermsVi() {
       </p>
       <h2>1. Dịch vụ</h2>
       <p>
-        {APP_NAME} tạo mô hình 3D từ hình ảnh và văn bản bằng Tencent Hunyuan 3D 2.0. Tencent không liên kết, không liên
+        {APP_NAME} tạo mô hình 3D từ hình ảnh và văn bản bằng Tencent Hunyuan 3D 2.1. Tencent không liên kết, không liên
         quan, không tài trợ và không xác nhận {APP_NAME}.
       </p>
       <h2>2. Phạm vi lãnh thổ (bắt buộc)</h2>
@@ -77,7 +77,7 @@ function TermsVi() {
       <h2>3. Giới hạn sử dụng (bắt buộc)</h2>
       <p>
         Việc bạn sử dụng dịch vụ và mọi kết quả đầu ra phải tuân thủ pháp luật hiện hành (bao gồm luật tuân thủ thương mại)
-        và Chính sách sử dụng được chấp nhận của Tencent Hunyuan 3D 2.0 (Phụ lục A của {license("giấy phép")}), là một phần
+        và Chính sách sử dụng được chấp nhận của Tencent Hunyuan 3D 2.1 (Phụ lục A của {license("giấy phép")}), là một phần
         của các Điều khoản này. Bạn không được dùng dịch vụ, hoặc bất kỳ kết quả đầu ra nào của dịch vụ, để cải thiện bất
         kỳ mô hình AI nào khác. Các giới hạn này áp dụng cho bất kỳ ai bạn phân phối kết quả đầu ra, và bạn phải chuyển
         thông báo này cho họ.

@@ -104,6 +104,12 @@ export type BoneSpec = {
    */
   reach?: { center: Vector3; radius: number; plane?: { origin: Vector3; dir: Vector3 } };
   /**
+   * Heat skinning: no weight at all on the far side of the plane through `origin` (only the `dir` side), and never
+   * the nearest bone there. Keeps a collarbone off a big head resting on the shoulders, and a leg off a loincloth
+   * flying out beside it.
+   */
+  cap?: { origin: Vector3; dir: Vector3 };
+  /**
    * Heat skinning: blends with its parent only across the joint's thickness (an elbow, a knee). Heat alone spreads
    * the blend along the whole limb, and a bent elbow then caves in the upper arm.
    */
@@ -742,11 +748,22 @@ const humanoid: Template = {
       const side = (c: Vector3, half: number) => ({ center: c, radius: K * Math.max(half, 0.02 * h), ...(M >= 0 ? { plane: { origin: c.clone().addScaledVector(outward, -(1 - M) * half), dir: outward.clone() } } : {}) });
       const armReach = side(shoulder, halfShoulders);
       const legReach = side(hip, Math.abs(hip.clone().sub(hips).dot(outward)));
-      const arm = (b: BoneSpec): BoneSpec => ({ ...limb(b), reach: armReach });
-      const leg = (b: BoneSpec): BoneSpec => ({ ...gated(b, hip, knee), reach: legReach });
+      // Big heads (chibi, masks) rest right on the shoulders, with hair and feathers hanging beside them: heat from
+      // the collarbone and the upper arm spreads up over them, and a shrug or a wave then warps the head. Cap them
+      // just over the top of the arm (measured mid upper arm, inside it), not for arms raised above that.
+      const armRadius = m.bvh.closestPointToPoint(lerp(shoulder, elbow, 0.5))?.distance ?? 0;
+      const neckCap = { origin: shoulder.clone().setY(shoulder.y + 1.5 * Math.max(armRadius, 0.02 * h)), dir: UP.clone().negate() };
+      const capArm = Math.max(elbow.y, wrist.y) < neckCap.origin.y;
+      const arm = (b: BoneSpec): BoneSpec => ({ ...limb(b), reach: armReach, ...(capArm ? { cap: neckCap } : {}) });
+      // Loincloths, sashes and wide skirts hang from the hips: past the side of the leg they follow the hips, or a
+      // stride stretches them between the two.
+      const legRadius = m.bvh.closestPointToPoint(knee)?.distance ?? 0;
+      const legSide = Math.max(...[hip, knee, ankle].map(p => p.clone().sub(shoulderMid).dot(outward)));
+      const legCap = { origin: shoulderMid.clone().addScaledVector(outward, legSide + 2.5 * legRadius), dir: outward.clone().negate() };
+      const leg = (b: BoneSpec): BoneSpec => ({ ...gated(b, hip, knee), reach: legReach, cap: legCap });
       // Collarbone: shrugs when the arm goes up (see the clips), so the top of the shoulder rises with it instead of
       // the armpit and the trapezius stretching. Not with wings: it would take the wing roots' feathers.
-      if (!o.wings) bones.push(bone(`${S}Shoulder`, "Chest", lerp(shoulderMid, shoulder, 0.2).setY(shoulder.y), shoulder));
+      if (!o.wings) bones.push({ ...bone(`${S}Shoulder`, "Chest", lerp(shoulderMid, shoulder, 0.2).setY(shoulder.y), shoulder), cap: neckCap });
       bones.push(
         arm(bone(`${S}UpperArm`, o.wings ? "Chest" : `${S}Shoulder`, shoulder, elbow)),
         { ...arm(bone(`${S}LowerArm`, `${S}UpperArm`, elbow, wrist)), crisp: true },

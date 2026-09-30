@@ -60,7 +60,7 @@ export const SPECIES: Species[] = [
     archetype: "largeBeast",
     category: "quadruped",
     options: { longNeck: true, tail: true },
-    locomotion: ["Walk", "Run"],
+    locomotion: ["Walk", "Run", "Idle_Look", "Interact_Eat"],
     attacks: ["Attack_Stomp", "Attack_TailSwipe"],
   },
   {

@@ -25,6 +25,9 @@ export function generationCost(
   return (opts.textured ? costs.textured : costs.shape) + (opts.mode === "text" ? costs.textPrompt : 0);
 }
 
+/** Credits per game map (map worker). 0 for now: pricing not decided yet. */
+export const MAP_COST = 0;
+
 /** Prices in VND, paid by VietQR bank transfer. */
 export const CREDIT_PACKS = [
   { id: "starter", name: "Starter", credits: 50, priceVnd: 229_000, blurb: "~16 textured models" },
@@ -56,7 +59,7 @@ export const MESH_DETAIL_PRESETS = [
 ] as const;
 export type MeshDetail = (typeof MESH_DETAIL_PRESETS)[number]["id"];
 
-/** Texture size caps (px); the largest keeps the engine's native size (2.0: 2048, 2.1: 4096). */
+/** Texture size caps (px); the largest keeps the engine's native size (4096). */
 export const TEXTURE_SIZES = [512, 1024, 2048, 4096] as const;
 export type TextureSize = (typeof TEXTURE_SIZES)[number];
 export const MAX_TEXTURE_SIZE: TextureSize = 4096;
@@ -64,7 +67,9 @@ export const MAX_TEXTURE_SIZE: TextureSize = 4096;
 export const MAX_UPLOAD_BYTES = 4 * 1024 * 1024; // client downsizes to 1024px before upload
 export const ACCEPTED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
 export const MAX_PROMPT_LENGTH = 300;
+/** Game maps are uploaded at full size (detail matters for the terrain texture); the worker caps them at 1600px. */
+export const MAP_MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
 
 /** "Compress model" levels, lightest loss first (presets in src/server/compress.ts). */
-export const COMPRESS_LEVELS = ["light", "balanced", "strong"] as const;
+export const COMPRESS_LEVELS = ["light", "balanced", "strong", "ultra", "max"] as const;
 export type CompressLevel = (typeof COMPRESS_LEVELS)[number];

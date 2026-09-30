@@ -6,6 +6,7 @@ import {
   LayoutGridIcon,
   Loader2Icon,
   LogOutIcon,
+  MapIcon,
   Settings2Icon,
   SparklesIcon,
   type LucideIcon,
@@ -39,6 +40,7 @@ function useLinks({ credits, admin, busy }: NavProps & { busy: boolean }) {
   const links: NavLink[] = [
     { href: "/app", label: t.nav.create, icon: SparklesIcon },
     { href: "/app/library", label: t.nav.library, icon: busy ? Loader2Icon : LayoutGridIcon, spin: busy },
+    { href: "/app/maps", label: t.nav.maps, icon: MapIcon },
     ...(credits !== null ? [{ href: "/app/billing", label: t.nav.billing, icon: CreditCardIcon }] : []),
     ...(admin ? [{ href: "/app/admin", label: t.nav.admin, icon: Settings2Icon }] : []),
   ];
@@ -127,7 +129,7 @@ export function AppNav({
                 <span className="truncate text-xs font-normal text-muted-foreground">{email}</span>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
-              {links.slice(2).map(({ href, label, icon: Icon }) => (
+              {links.slice(3).map(({ href, label, icon: Icon }) => (
                 <DropdownMenuItem key={href} asChild>
                   <Link href={href}>
                     <Icon />
@@ -135,7 +137,7 @@ export function AppNav({
                   </Link>
                 </DropdownMenuItem>
               ))}
-              {links.length > 2 ? <DropdownMenuSeparator /> : null}
+              {links.length > 3 ? <DropdownMenuSeparator /> : null}
               <DropdownMenuItem variant="destructive" onSelect={signOut}>
                 <LogOutIcon />
                 {t.nav.signOut}

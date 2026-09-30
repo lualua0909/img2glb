@@ -51,9 +51,9 @@ export type RigInfo = {
   clips: string[];
 };
 
-/** A smaller copy of a model: WebP textures, Draco geometry, fewer faces at "strong" (see src/server/compress.ts). */
+/** A smaller copy of a model: WebP textures, Draco geometry, fewer faces from "strong" up (see src/server/compress.ts). */
 export type CompressInfo = {
-  level: "light" | "balanced" | "strong";
+  level: "light" | "balanced" | "strong" | "ultra" | "max";
   /** Size of the model it was compressed from. */
   fromBytes: number;
 };
@@ -163,6 +163,39 @@ export const paymentOrder = pgTable(
   ],
 );
 
+/** Game map (isometric diorama image) turned into a layered 3D scene by the map worker (worker/map). */
+export type MapStats = Record<string, number>;
+
+export const mapGeneration = pgTable(
+  "map_generation",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    name: text("name"),
+    inputImageKey: text("input_image_key").notNull(),
+    status: generationStatus("status").notNull().default("queued"),
+    progressMessage: text("progress_message"),
+    progress: integer("progress"),
+    /** Map worker job id and polling state. */
+    providerState: jsonb("provider_state").$type<Record<string, unknown>>(),
+    modelKey: text("model_key"),
+    modelBytes: integer("model_bytes"),
+    cost: integer("cost").notNull().default(0),
+    error: text("error"),
+    /** Worker timings (seconds per stage) and scene counts (props, variants, terrain faces). */
+    stats: jsonb("stats").$type<MapStats>(),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (t) => [
+    index("map_generation_user_created_idx").on(t.userId, t.createdAt.desc()),
+    index("map_generation_active_idx").on(t.status).where(sql`${t.status} in ('queued', 'processing')`),
+  ],
+);
+
 /** Admin-editable runtime settings (see src/lib/settings.ts). One row per key; the app uses key "app". */
 export const appSetting = pgTable("app_setting", {
   key: text("key").primaryKey(),
@@ -173,3 +206,4 @@ export const appSetting = pgTable("app_setting", {
 
 export type Generation = typeof generation.$inferSelect;
 export type PaymentOrder = typeof paymentOrder.$inferSelect;
+export type MapGeneration = typeof mapGeneration.$inferSelect;

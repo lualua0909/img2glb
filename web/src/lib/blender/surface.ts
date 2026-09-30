@@ -6,12 +6,16 @@ import { computeSkin } from "../rig/skin";
 import type { RigPlan } from "../rig/rig";
 import type { RigConfig, TemplateRigConfig } from "./config";
 
+/**
+ * Humanoid presets bind with the browser's heat skin: Blender's bone heat fails on generated meshes with loose parts
+ * (feathers, hair cards, belts) and falls back to the straight-line nearest bone, so a feather beside the shoulder
+ * follows the arm. Overlapping wing layers need its limb isolation too.
+ */
 export function needsSurfaceBinding(config: RigConfig): config is TemplateRigConfig {
-  return config.preset === "template" && config.category === "humanoid" &&
-    ["WingUpperL", "WingUpperR"].every(name => config.skeleton.some(b => b.name === name));
+  return config.preset === "template" && config.category === "humanoid";
 }
 
-/** Use the same surface connectivity and limb isolation as the browser for overlapping human/wing layers. */
+/** Use the same surface connectivity and limb isolation as the browser. */
 export async function surfaceBinding(input: string, config: TemplateRigConfig) {
   const io = new NodeIO().registerExtensions(ALL_EXTENSIONS);
   const document = await io.read(input);
@@ -40,10 +44,13 @@ export async function surfaceBinding(input: string, config: TemplateRigConfig) {
   if (!count) throw new Error("Input contains no mesh");
   const model = buildModelData(meshes);
   try {
+    const plane = (p: { origin: number[]; dir: number[] }) => ({ origin: new Vector3(...p.origin), dir: new Vector3(...p.dir) });
     const bones = config.skeleton.map(b => ({
       ...b, head: new Vector3(...b.head), tail: new Vector3(...b.tail),
+      reach: b.reach ? { center: new Vector3(...b.reach.center), radius: b.reach.radius, plane: b.reach.plane && plane(b.reach.plane) } : undefined,
+      cap: b.cap && plane(b.cap),
       gate: b.gate ? { ...b.gate, origin: new Vector3(...b.gate.origin), dir: new Vector3(...b.gate.dir),
-        planes: b.gate.planes?.map(p => ({ origin: new Vector3(...p.origin), dir: new Vector3(...p.dir) })),
+        planes: b.gate.planes?.map(plane),
       } : undefined,
     }));
     const plan: RigPlan = {

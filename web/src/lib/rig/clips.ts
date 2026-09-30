@@ -1074,7 +1074,17 @@ function quadruped(k: Kit): RigClip[] {
   const neck = (P: Poser, a: number) => {
     necks.forEach(b => pitch(P, b, a / necks.length));
   };
-  const turnNeck = (P: Poser, a: number) => necks.forEach(b => yaw(P, b, a / necks.length));
+  // Side-to-side axis of each neck link: a yaw about the vertical would only twist an upright (sauropod) neck.
+  const handed = Math.sign(k.F.clone().cross(k.L).dot(k.U));
+  const swingAxis = (b: string) => {
+    const a = r.restDir[r.index.get(b)!].clone().cross(k.L).multiplyScalar(handed);
+    return a.lengthSq() > 1e-6 ? a.normalize() : k.U;
+  };
+  const turnNeck = (P: Poser, a: number) => necks.forEach(b => P.rot(b, swingAxis(b), a / necks.length));
+  /** Neck sway, each link lagging the one below it so a long neck waves instead of swinging stiffly. */
+  const swayNeck = (P: Poser, ph: number, a: number) =>
+    necks.forEach((b, i) => P.rot(b, swingAxis(b), (a / necks.length) * Math.sin(ph - (1.2 * i) / necks.length)));
+  const longNeck = necks.length > 2;
   /** Opens the jaw (models rigged with one): 1 = wide open. */
   const jaw = (P: Poser, open: number) => pitch(P, "Jaw", 0.5 * open);
   /** Short arms of an animal on two legs, swinging opposite each other. */
@@ -1117,16 +1127,33 @@ function quadruped(k: Kit): RigClip[] {
     [
       k.clip("04", "Idle", 3, (_t, P, ph) => {
         pitch(P, "Spine", 0.02 * Math.sin(ph));
-        neck(P, 0.05 * Math.sin(2 * ph));
+        neck(P, (longNeck ? 0.15 : 0.05) * Math.sin(2 * ph));
+        if (longNeck) swayNeck(P, ph, 0.5);
         yaw(P, "Head", 0.3 * Math.sin(ph));
         tail(P, 3 * ph, 0.25);
         trunk(P, ph, 0.25);
         arms(P, 0.05 * Math.sin(ph));
       }),
+      // Look around (long necks): raise the head, turn the neck to one side, then the other, back to the front.
+      ...(longNeck
+        ? [
+            k.clip("04", "Idle_Look", 6, (t, P) => {
+              const up = keys(t, [[0, 0], [0.8, 1], [5.2, 1], [6, 0]]);
+              const turn = keys(t, [[0, 0], [1.2, 0], [2.2, 1], [3, 1], [4.2, -1], [5, -1], [6, 0]]);
+              neck(P, -0.25 * up);
+              turnNeck(P, 1.1 * turn);
+              yaw(P, "Head", 0.3 * turn);
+              pitch(P, "Head", 0.15 * up);
+              roll(P, "Head", -0.1 * turn);
+              tail(P, (TAU * t) / 3, 0.2);
+            }),
+          ]
+        : []),
       k.clip("04", "Walk", 1.2, (_t, P, ph) => {
         P.move("Hips", k.up(0.01 * H * Math.cos(2 * ph)));
         roll(P, "Spine", 0.03 * Math.sin(ph));
-        neck(P, 0.05 * Math.cos(2 * ph));
+        neck(P, (longNeck ? 0.12 : 0.05) * Math.cos(2 * ph));
+        if (longNeck) swayNeck(P, ph, 0.15);
         legs(P, ph, [0, Math.PI, Math.PI, 0], 0.35, 0.6);
         tail(P, ph, 0.25);
         trunk(P, ph, 0.3);

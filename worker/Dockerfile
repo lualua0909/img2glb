@@ -1,25 +1,37 @@
-# GPU worker: Hunyuan3D-2 shape + texture + text-to-image.
-# Needs an NVIDIA GPU with >= 16 GB VRAM for shape+texture (24 GB recommended with text-to-3D).
+# GPU worker: Hunyuan3D-2.1 shape + PBR texture + text-to-image.
+# Needs an NVIDIA GPU with >= 32 GB VRAM for shape + texture (upstream: 10 GB shape, 21 GB texture, 29 GB both).
+# Build from worker/: docker build -t hy3d-worker .
 FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=1 PYTHONUNBUFFERED=1 \
-    DATA_ROOT=/data TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0"
+    DATA_ROOT=/data TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0" \
+    HY21_REPO=/opt/Hunyuan3D-2.1 REALESRGAN_CKPT=/opt/realesrgan/RealESRGAN_x4plus.pth
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3.10 python3-pip python3.10-dev git libgl1 libglib2.0-0 libegl1 build-essential ninja-build \
+      python3.10 python3-pip python3.10-dev git curl libgl1 libglib2.0-0 libegl1 build-essential ninja-build \
     && rm -rf /var/lib/apt/lists/* && ln -sf /usr/bin/python3.10 /usr/bin/python
 
 RUN pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu124
 
+# Same commit as the ../Hunyuan3D-2.1 submodule, with the device-agnostic patch (see mac/README.md).
 WORKDIR /opt
-# Pin to a known commit in production: git checkout <sha>
-RUN git clone --depth 1 https://github.com/Tencent-Hunyuan/Hunyuan3D-2.git
-WORKDIR /opt/Hunyuan3D-2
-RUN pip install -r requirements.txt && pip install -e . \
-    && cd hy3dgen/texgen/custom_rasterizer && python setup.py install \
-    && cd ../differentiable_renderer && python setup.py install
+COPY mac/hunyuan3d-2.1-mps.patch /opt/hunyuan3d-2.1.patch
+RUN git clone https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1.git \
+    && git -C Hunyuan3D-2.1 checkout 82920d643c0dc2f7bfd7255f45f62d386edfe60c \
+    && git -C Hunyuan3D-2.1 apply /opt/hunyuan3d-2.1.patch
 
+# Upstream pins minus packages the worker never imports (cupy, bpy, deepspeed, gradio); same set as cuda/setup.sh.
 COPY requirements.txt /opt/worker/requirements.txt
-RUN pip install -r /opt/worker/requirements.txt
+RUN pip install "diffusers==0.30.0" "transformers==4.46.0" "accelerate==1.1.1" \
+      "huggingface-hub==0.30.2" safetensors "numpy<2" scipy einops pandas "opencv-python<4.11" imageio scikit-image \
+      "rembg[cpu]" realesrgan basicsr trimesh pymeshlab pygltflib xatlas omegaconf pyyaml configargparse tqdm psutil \
+      timm torchdiffeq pytorch-lightning onnxruntime ninja pybind11 setuptools -r /opt/worker/requirements.txt \
+    && pip install --no-build-isolation /opt/Hunyuan3D-2.1/hy3dpaint/custom_rasterizer \
+    && cd /opt/Hunyuan3D-2.1/hy3dpaint/DifferentiableRenderer \
+    && c++ -O3 -shared -std=c++11 -fPIC $(python -m pybind11 --includes) \
+         mesh_inpaint_processor.cpp -o "mesh_inpaint_processor$(python -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')"
+RUN mkdir -p /opt/realesrgan && curl -fL -o "$REALESRGAN_CKPT" \
+      https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth
+
 COPY server.py /opt/worker/server.py
 
 # Model weights (/data/models), job outputs (/data/worker-jobs) and the admin model config live under /data.

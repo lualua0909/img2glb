@@ -123,6 +123,9 @@ export function adjacency(m: ModelData) {
  * nearest bone that it can "see" from inside the mesh, and heat diffuses over the surface, giving smooth weights
  * that don't leak between limbs close in space (an arm resting against the torso).
  */
+const capped = (b: RigPlan["bones"][number], v: Vector3) =>
+  !!b.cap && v.x * b.cap.dir.x + v.y * b.cap.dir.y + v.z * b.cap.dir.z < b.cap.origin.dot(b.cap.dir);
+
 async function heatSkin(m: ModelData, plan: RigPlan, skin: Skin, onProgress?: (p: number) => void) {
   const n = m.count;
   const deform = plan.bones.map((b, i) => ({ b, i })).filter(({ b }) => b.deform);
@@ -158,7 +161,7 @@ async function heatSkin(m: ModelData, plan: RigPlan, skin: Skin, onProgress?: (p
     for (let j = 0; j < nb; j++) {
       const g = deform[j].b.gate;
       dist[j] =
-        g && (q.copy(v).sub(g.origin).dot(g.dir) < 0 || g.planes?.some(p => q.copy(v).sub(p.origin).dot(p.dir) < 0))
+        capped(deform[j].b, v) || g && (q.copy(v).sub(g.origin).dot(g.dir) < 0 || g.planes?.some(p => q.copy(v).sub(p.origin).dot(p.dir) < 0))
           ? Infinity
           : v.distanceTo(closestOnSegment(v, deform[j].b.head, deform[j].b.tail, q));
     }
@@ -192,7 +195,7 @@ async function heatSkin(m: ModelData, plan: RigPlan, skin: Skin, onProgress?: (p
     if (!blind[i] && !seen[i * nb + j]) return Infinity;
     vertexAt(m, i, v);
     const g = deform[j].b.gate;
-    if (g && (q.copy(v).sub(g.origin).dot(g.dir) < 0 || g.planes?.some(p => q.copy(v).sub(p.origin).dot(p.dir) < 0))) return Infinity;
+    if (capped(deform[j].b, v) || g && (q.copy(v).sub(g.origin).dot(g.dir) < 0 || g.planes?.some(p => q.copy(v).sub(p.origin).dot(p.dir) < 0))) return Infinity;
     return v.distanceTo(closestOnSegment(v, deform[j].b.head, deform[j].b.tail, q));
   };
   // A bone deep inside a fat body (the spine of an elephant) has no surface within `reach`: its core starts at its own
@@ -300,6 +303,7 @@ async function heatSkin(m: ModelData, plan: RigPlan, skin: Skin, onProgress?: (p
       if (reach && !touch && limb[deform[k].i] !== limb[deform[j].i] && (vertexAt(m, i, a).distanceTo(reach.center) > reach.radius || (reach.plane && b.copy(a).sub(reach.plane.origin).dot(reach.plane.dir) < 0))) free[i] = 0;
       if (g?.fade !== undefined && vertexAt(m, i, a).sub(g.origin).dot(g.dir) < -g.fade) free[i] = 0;
       if (g?.planes?.some(p => vertexAt(m, i, a).sub(p.origin).dot(p.dir) < 0)) free[i] = 0;
+      if (capped(deform[j].b, vertexAt(m, i, a))) free[i] = 0;
       x[i] = nearest[i] === j ? 1 : 0;
       rhs[i] = H[i] * x[i];
     }

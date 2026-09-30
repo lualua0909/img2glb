@@ -10,6 +10,10 @@ export function templateRigConfig(plan: RigPlan, species: string | null): Templa
     skeleton: plan.bones.map(b => ({
       name: b.name, parent: b.parent, head: b.head.toArray(), tail: b.tail.toArray(), deform: b.deform,
       ...(b.rigid ? { rigid: true } : {}),
+      ...(b.crisp ? { crisp: true } : {}),
+      ...(b.reach ? { reach: { center: b.reach.center.toArray(), radius: b.reach.radius,
+        ...(b.reach.plane ? { plane: { origin: b.reach.plane.origin.toArray(), dir: b.reach.plane.dir.toArray() } } : {}) } } : {}),
+      ...(b.cap ? { cap: { origin: b.cap.origin.toArray(), dir: b.cap.dir.toArray() } } : {}),
       ...(b.gate ? { gate: { origin: b.gate.origin.toArray(), dir: b.gate.dir.toArray(), ...(b.gate.fade !== undefined ? { fade: b.gate.fade } : {}),
         ...(b.gate.planes ? { planes: b.gate.planes.map(p => ({ origin: p.origin.toArray(), dir: p.dir.toArray() })) } : {}),
       } } : {}),

@@ -9,7 +9,6 @@ import {
   TEXTURE_SIZES,
   USE_CASES,
 } from "@/lib/config";
-import { PROVIDERS } from "@/lib/settings";
 import { createGeneration, toDTO } from "@/server/generations";
 import { jsonError, withUser } from "@/server/http";
 
@@ -26,7 +25,6 @@ const fields = z.object({
     .refine((v) => (TEXTURE_SIZES as readonly number[]).includes(v), "Invalid texture size")
     .optional(),
   flatShading: z.enum(["true", "false"]).transform((v) => v === "true").optional(),
-  engine: z.enum(PROVIDERS).optional(),
 });
 
 export const POST = withUser(async (req, user) => {
@@ -62,7 +60,6 @@ export const POST = withUser(async (req, user) => {
     faceCount: input.faceCount,
     textureSize: input.textureSize,
     flatShading: input.flatShading,
-    engine: input.engine,
   });
   return Response.json(await toDTO(gen), { status: 201 });
 });

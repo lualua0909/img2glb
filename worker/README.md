@@ -1,32 +1,32 @@
-# Hunyuan3D-2 GPU worker
+# Hunyuan3D-2.1 GPU worker
 
 Self-hosted inference backend for the web app. Wraps the upstream
-[Hunyuan3D-2](https://github.com/Tencent-Hunyuan/Hunyuan3D-2) pipelines behind an authenticated job API.
+[Hunyuan3D-2.1](https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1) pipelines (3.3B shape DiT, PBR texture) behind an
+authenticated job API.
 
-Modified from upstream `api_server.py`: auth, FIFO GPU queue, URL input, text-to-3D, refinement, job status API,
+Modified from upstream Hunyuan3D `api_server.py`: auth, FIFO GPU queue, URL input, text-to-3D, refinement, job status API,
 TTL cleanup.
 
 ## Requirements
 
-- NVIDIA GPU. Shape only: ~6 GB VRAM. Shape + texture: ~16 GB. With text-to-3D (HunyuanDiT): 24 GB recommended
-  (or set `LOW_VRAM=1`).
+- NVIDIA GPU. Shape only: ~10 GB VRAM. PBR texture: ~21 GB. Shape + texture: ~29 GB (upstream figures), so 32 GB+
+  recommended, more with text-to-3D (HunyuanDiT).
 - Recommended hosts: RunPod, Lambda, Vast.ai, AWS g5/g6, GCP L4/A100.
 - Apple Silicon Mac (MPS): see [mac/README.md](mac/README.md).
 
 ## Local host (no Docker)
 
 `../start.sh` runs the workers on the machine itself and picks the platform: `cuda/*` scripts when `nvidia-smi` lists
-a GPU, `mac/*` on Apple Silicon (`WORKER_PLATFORM=cuda|mac` overrides). Both use `worker/.venv` (2.0) and
-`worker/.venv21` (2.1) and the same device-agnostic Hunyuan patches (`mac/*.patch`: device argument, CUDA kernel when
-nvcc exists, CPU kernel otherwise). On a CUDA host, set up once:
+a GPU, `mac/*` on Apple Silicon (`WORKER_PLATFORM=cuda|mac` overrides). Both use `worker/.venv` and the same
+device-agnostic Hunyuan3D-2.1 patch (`mac/hunyuan3d-2.1-mps.patch`: device argument, CUDA kernel when nvcc exists, CPU
+kernel otherwise). On a CUDA host, set up once:
 
 ```bash
-./cuda/setup.sh              # Hunyuan3D-2.0 (needs uv, nvcc; TORCH_INDEX picks the CUDA wheels, default cu128)
-./cuda/setup-2.1.sh          # Hunyuan3D-2.1 (optional)
+./cuda/setup.sh              # Hunyuan3D-2.1 (needs uv, nvcc; TORCH_INDEX picks the CUDA wheels, default cu128)
 ./cuda/setup-skintokens.sh   # AI auto-rig (optional, see below)
 ```
 
-On CUDA the worker keeps upstream's quality defaults (2.1 paints 9 views at 768 px, text-to-3D on).
+On CUDA the worker keeps upstream's quality defaults (paints 9 views at 768 px, text-to-3D on).
 
 ## Run
 
@@ -47,7 +47,7 @@ data/worker-jobs/        per-job outputs, purged after JOB_TTL_SECONDS
 data/worker-config.json  model selection saved from the admin CMS
 ```
 
-The first start downloads ~15 GB of weights for the default models. Then set in the web app:
+The first start downloads ~20 GB of weights for the default models (DiT v2.1, VAE, PaintPBR, DINOv2-giant). Then set in the web app:
 
 ```
 HUNYUAN_WORKER_URL=https://your-worker-host:8081
@@ -90,17 +90,15 @@ Mac, `autorig` is false, `rig_url` jobs get 501 and the editor keeps its browser
 |---|---|---|
 | `WORKER_TOKEN` | — | required, ≥24 chars |
 | `DATA_ROOT` | `../data` | models, job outputs, admin model config |
-| `SHAPE_MODEL` / `SHAPE_SUBFOLDER` | `tencent/Hunyuan3D-2` / `hunyuan3d-dit-v2-0` | full shape model (30-50 steps) |
-| `TEX_SUBFOLDER` | `hunyuan3d-paint-v2-0` | full texture model |
-| `ENABLE_TEX` | `1` | texture (Hunyuan3D-Paint) |
+| `SHAPE_MODEL` / `SHAPE_SUBFOLDER` | `tencent/Hunyuan3D-2.1` / `hunyuan3d-dit-v2-1` | full shape model (30-50 steps) |
+| `TEX_MODEL` / `TEX_SUBFOLDER` | `tencent/Hunyuan3D-2.1` / `hunyuan3d-paintpbr-v2-1` | PBR texture model |
+| `ENABLE_TEX` | `1` | texture (Hunyuan3D-Paint PBR) |
 | `ENABLE_T2I` | `1` | text-to-3D via HunyuanDiT |
 | `T2I_MODEL` / `T2I_STEPS` | `Tencent-Hunyuan/HunyuanDiT-v1.2-Diffusers` / `50` | full (non-distilled) text-to-image |
 | `REMBG_MODEL` | `birefnet-general` | background removal: BiRefNet-general (MIT, commercial use OK) |
-| `ENGINE` | `2.0` | `2.1` runs Hunyuan3D-2.1 (own venv, see `mac/setup-2.1.sh`, `mac/run-2.1.sh`, port 8082) |
-| `LOAD_ON_START` | `1` | `0` = load models with the first job (the engines share `DATA_ROOT/engine.lock`) |
-| `PAINT_VIEWS` / `PAINT_RESOLUTION` | `9` / `768` | 2.1 PBR paint views and view size (Mac: 6 / 512) |
-| `HY21_REPO` / `REALESRGAN_CKPT` | `../Hunyuan3D-2.1` / `DATA_ROOT/models/realesrgan/RealESRGAN_x4plus.pth` | 2.1 only |
-| `LOW_VRAM` | `0` | CPU offload for texture model |
+| `LOAD_ON_START` | `1` | `0` = load models with the first job |
+| `PAINT_VIEWS` / `PAINT_RESOLUTION` | `9` / `768` | PBR paint views and view size (Mac: 6 / 512) |
+| `HY21_REPO` / `REALESRGAN_CKPT` | `../Hunyuan3D-2.1` / `DATA_ROOT/models/realesrgan/RealESRGAN_x4plus.pth` | upstream checkout, paint upscaler |
 | `DEVICE` | auto | `cuda` when available, else `mps`, else `cpu` |
 | `SKINTOKENS_REPO` / `SKINTOKENS_PYTHON` | `../SkinTokens` / `<repo>/.venv/bin/python` | auto-rigging checkout and venv |
 | `AUTORIG_TIMEOUT` | `1800` | seconds before an auto-rig job is killed |

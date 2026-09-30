@@ -2,7 +2,7 @@ import "server-only";
 import type { GenerationProvider, PollResult, ProviderState } from "./types";
 import { workerPreprocess } from "./worker-preprocess";
 
-// Self-hosted GPU worker (see /worker in this repo) wrapping the Hunyuan3D-2 or Hunyuan3D-2.1 pipelines.
+// Self-hosted GPU worker (see /worker in this repo) wrapping the Hunyuan3D-2.1 pipelines.
 
 type WorkerJob = {
   id: string;

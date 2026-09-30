@@ -7,6 +7,10 @@ import { env } from "@/lib/env";
 export const keys = {
   input: (userId: string, id: string, ext: string) => `inputs/${userId}/${id}.${ext}`,
   model: (userId: string, id: string) => `models/${userId}/${id}.glb`,
+  mapInput: (userId: string, id: string, ext: string) => `maps/${userId}/${id}-input.${ext}`,
+  mapModel: (userId: string, id: string) => `maps/${userId}/${id}.glb`,
+  /** The worker's scene, kept on the first edit so the user can restore it. */
+  mapOriginal: (userId: string, id: string) => `maps/${userId}/${id}-original.glb`,
 };
 
 // Plain files under STORAGE_DIR, served by /api/files/<key> with HMAC-signed URLs.

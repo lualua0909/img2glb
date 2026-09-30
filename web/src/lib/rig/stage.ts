@@ -303,6 +303,8 @@ export async function createStage(el: HTMLElement, src: string): Promise<Stage> 
     (helper.material as Material).depthTest = false;
     helper.renderOrder = 999;
     helper.visible = showBones;
+    // Saved into the glTF scene extras so viewers turn the model by its real facing (see `modelForward`).
+    group.userData.forward = frame.forward.toArray();
     scene.add(group, helper);
     rig = {
       group,

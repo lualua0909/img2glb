@@ -46,10 +46,25 @@ import {
   DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { countMeshGeometry } from "@/lib/mesh-stats";
+import { modelForward } from "@/lib/rig/facing";
+import { WEAPONS } from "@/lib/rig/rig";
+import {
+  DEFAULT_POSE,
+  type PreviewKind,
+  type Side,
+  WEAPON_LENGTH,
+  type WeaponPose,
+  buildMockWeapon,
+  disposeWeapon,
+  findHandAnchor,
+  holderMatrix,
+  normalizeWeapon,
+} from "@/lib/rig/preview-weapon";
 import { useI18n } from "./i18n-provider";
 
 export type ViewMode = "textured" | "clay" | "wireframe" | "normals" | "uv" | "rig";
@@ -91,7 +106,14 @@ type Stats = {
   hasVertexColors: boolean;
   bones: number;
   animations: string[];
+  /** Hands a preview weapon can be held in. */
+  hands: Side[];
 };
+
+/** Preview weapon in a hand: a mock or an uploaded GLB. */
+type WeaponPick = { kind: PreviewKind } | { name: string; glb: ArrayBuffer };
+const SIDES: Side[] = ["Right", "Left"];
+const MOCKS = WEAPONS.filter((w): w is PreviewKind => w !== "none");
 
 type Engine = {
   setMode(mode: ViewMode): void;
@@ -102,8 +124,9 @@ type Engine = {
   setAutoRotate(on: boolean): void;
   /** Turns the model 180° about its center (Z axis), so it stays on the ground. */
   setFlipped(on: boolean): void;
-  /** The model as shown (textured, rest pose, current orientation) as binary GLB. */
-  exportGlb(): Promise<ArrayBuffer>;
+  /** The model as shown (textured, rest pose, current orientation) as binary GLB. `withWeapons`: the preview
+   * weapons go along, as nodes under the hands' sockets (so they follow every clip). */
+  exportGlb(withWeapons?: boolean): Promise<ArrayBuffer>;
   view(view: CameraView): void;
   playAnimation(index: number | null): void;
   /** Plays a clip once, then calls `done`. */
@@ -120,6 +143,9 @@ type Engine = {
   playDie(): boolean;
   resetPlay(): void;
   onPlayState(cb: (a: PlayAction) => void): () => void;
+  /** Viewer-only weapon held in a hand (null removes it); rejects when an uploaded GLB can't be read. */
+  setWeapon(side: Side, pick: WeaponPick | null): Promise<void>;
+  setWeaponPose(side: Side, pose: WeaponPose): void;
 };
 
 /** Colored, labelled grid for checking UV layout and texel stretching. */
@@ -277,12 +303,15 @@ export function ModelInspector({
   fileBytes,
   baseName,
   onSaveModel,
+  onWeaponExport,
 }: {
   src: string;
   fileBytes?: number | null;
   baseName: string;
   /** Persists an edited model (binary GLB); the saved copy comes back as a new `src`. */
   onSaveModel: (glb: ArrayBuffer) => Promise<void>;
+  /** While a preview weapon is held: exports the model with it (downloads use it); null when no weapon is held. */
+  onWeaponExport?: (exportGlb: (() => Promise<ArrayBuffer>) | null) => void;
 }) {
   const { t, locale } = useI18n();
   const tv = t.viewer;
@@ -309,6 +338,11 @@ export function ModelInspector({
   const [playAction, setPlayAction] = useState<PlayAction>("idle");
   const [heldDirs, setHeldDirs] = useState<Set<PlayDir>>(new Set());
   const playModeRef = useRef(false);
+  const [weaponPanel, setWeaponPanel] = useState(false);
+  const [weaponSide, setWeaponSide] = useState<Side>("Right");
+  const [weapons, setWeapons] = useState<Record<Side, WeaponPick | null>>({ Right: null, Left: null });
+  const [weaponPoses, setWeaponPoses] = useState<Record<Side, WeaponPose>>({ Right: DEFAULT_POSE, Left: DEFAULT_POSE });
+  const weaponFile = useRef<HTMLInputElement>(null);
   useEffect(() => {
     playModeRef.current = playMode;
   }, [playMode]);
@@ -381,6 +415,15 @@ export function ModelInspector({
       pivot.add(mover);
       mover.add(model);
       scene.add(pivot);
+      // Preview weapons hang from the hands; their rest matrices (model space) are read before any clip plays.
+      model.updateMatrixWorld(true);
+      const toModel = model.matrixWorld.clone().invert();
+      const hands = new Map(
+        SIDES.flatMap((s) => {
+          const anchor = findHandAnchor(model, s);
+          return anchor ? [[s, { anchor, rest: toModel.clone().multiply(anchor.matrixWorld) }] as const] : [];
+        }),
+      );
       setStats({
         ...geometryStats,
         meshes: meshes.length,
@@ -392,6 +435,7 @@ export function ModelInspector({
         hasVertexColors,
         bones: bones.size,
         animations: gltf.animations.map((a, i) => a.name || `#${i + 1}`),
+        hands: [...hands.keys()],
       });
 
       // ---- view-mode materials ----
@@ -505,6 +549,30 @@ export function ModelInspector({
       const raycaster = new THREE.Raycaster();
       const timer = new THREE.Timer();
 
+      // ---- preview weapons ----
+      const facing = modelForward(model);
+      const held = new Map<Side, { holder: InstanceType<typeof THREE.Group>; length: number }>();
+      const weaponPoses = new Map<Side, WeaponPose>();
+      const weaponLoads = new Map<Side, number>();
+      const placeWeapon = (side: Side) => {
+        const w = held.get(side);
+        const hand = hands.get(side);
+        if (!w || !hand) return;
+        // As TRS, not a raw matrix: the exporter writes TRS for models with animations.
+        holderMatrix(hand.rest, facing, w.length, weaponPoses.get(side) ?? DEFAULT_POSE).decompose(
+          w.holder.position,
+          w.holder.quaternion,
+          w.holder.scale,
+        );
+      };
+      const dropWeapon = (side: Side) => {
+        const w = held.get(side);
+        if (!w) return;
+        w.holder.removeFromParent();
+        disposeWeapon(w.holder);
+        held.delete(side);
+      };
+
       // ---- game controller: walk / run inside the grid, jump / attack / die ----
       // Single tap on a direction = a short walk step; holding the button (>0.45s) = run.
       // Position is clamped to the grid so the character never leaves the map.
@@ -568,6 +636,23 @@ export function ModelInspector({
         if (dir === "down") return out.copy(camFlat).negate();
         if (dir === "right") return out.copy(camRight);
         return out.copy(camRight).negate();
+      };
+      // Generated models face whichever way the source image showed them (side-on animals face ±X), so the
+      // travel yaw is offset by the model's own forward, and the turn pivots on the model's center, not the origin.
+      const forwardYaw = (() => {
+        const f = modelForward(model);
+        return Math.atan2(f.x, f.z);
+      })();
+      const placeMover = () => {
+        const turn = play.yaw - forwardYaw;
+        const cos = Math.cos(turn);
+        const sin = Math.sin(turn);
+        mover.rotation.set(0, turn, 0);
+        mover.position.set(
+          center.x + play.x - (cos * center.x + sin * center.z),
+          play.y,
+          center.z + play.z - (-sin * center.x + cos * center.z),
+        );
       };
       const animNames = gltf.animations.map((a) => a.name);
       const findClip = (re: RegExp) => animNames.findIndex((n) => re.test(n));
@@ -652,11 +737,12 @@ export function ModelInspector({
           play.y += play.vy * dt;
           if (play.y <= 0) {
             play.y = 0;
+            placeMover();
             play.air = false;
             play.loop = "__none";
             stopToIdle();
           } else {
-            mover.position.set(play.x, play.y, play.z);
+            placeMover();
           }
         } else if (now >= play.atkUntil) {
           if (hasInput) {
@@ -672,8 +758,7 @@ export function ModelInspector({
             play.z = THREE.MathUtils.clamp(play.z + moveVec.z * speed * dt, -LIMIT, LIMIT);
             // Face the travel direction immediately so the character always walks straight ahead.
             play.yaw = Math.atan2(moveVec.x, moveVec.z);
-            mover.position.set(play.x, 0, play.z);
-            mover.rotation.set(0, play.yaw, 0);
+            placeMover();
             playLoopIdx(running ? moveRunIdx : moveWalkIdx);
             emitAction(running ? "run" : "walk");
           } else if (now < play.walkUntil) {
@@ -745,12 +830,14 @@ export function ModelInspector({
           pivot.rotation.z = on ? Math.PI : 0;
           pivot.position.set(on ? center.x * 2 : 0, on ? center.y * 2 : 0, 0);
         },
-        async exportGlb() {
+        async exportGlb(withWeapons = false) {
           // Export original materials, no wireframe overlay, bones at rest.
           const mode = currentMode;
           this.setMode("textured");
           mixer?.stopAllAction();
           restPose();
+          const holders = [...held.values()].map((w) => w.holder);
+          holders.forEach((h) => (h.visible = withWeapons));
           const mx = mover.position.x;
           const my = mover.position.y;
           const mz = mover.position.z;
@@ -763,6 +850,7 @@ export function ModelInspector({
               animations: gltf.animations,
             })) as ArrayBuffer;
           } finally {
+            holders.forEach((h) => (h.visible = true));
             mover.position.set(mx, my, mz);
             mover.rotation.set(0, ry, 0);
             this.setMode(mode);
@@ -819,7 +907,7 @@ export function ModelInspector({
           play.downAt.clear();
           play.x = 0;
           play.z = 0;
-          play.yaw = 0;
+          play.yaw = forwardYaw;
           play.vy = 0;
           play.y = 0;
           play.air = false;
@@ -871,8 +959,7 @@ export function ModelInspector({
             play.x = THREE.MathUtils.clamp(play.x + tapVec.x * TAP_STEP, -LIMIT, LIMIT);
             play.z = THREE.MathUtils.clamp(play.z + tapVec.z * TAP_STEP, -LIMIT, LIMIT);
             play.yaw = Math.atan2(tapVec.x, tapVec.z);
-            mover.position.set(play.x, 0, play.z);
-            mover.rotation.set(0, play.yaw, 0);
+            placeMover();
             play.walkUntil = now + 450;
             playLoopIdx(moveWalkIdx);
             emitAction("walk");
@@ -922,7 +1009,7 @@ export function ModelInspector({
           play.downAt.clear();
           play.x = 0;
           play.z = 0;
-          play.yaw = 0;
+          play.yaw = forwardYaw;
           play.vy = 0;
           play.y = 0;
           play.air = false;
@@ -947,6 +1034,31 @@ export function ModelInspector({
             play.listeners.delete(cb);
           };
         },
+        async setWeapon(side, pick) {
+          const load = (weaponLoads.get(side) ?? 0) + 1;
+          weaponLoads.set(side, load);
+          const hand = hands.get(side);
+          if (!pick || !hand) return dropWeapon(side);
+          const content =
+            "kind" in pick
+              ? buildMockWeapon(pick.kind)
+              : normalizeWeapon((await gltfLoader().parseAsync(pick.glb.slice(0), "")).scene);
+          // A newer pick (or unmount) came in while the file was parsing.
+          if (disposed || weaponLoads.get(side) !== load) return disposeWeapon(content);
+          dropWeapon(side);
+          const holder = new THREE.Group();
+          // Named and tagged for game engines when downloaded with the model.
+          holder.name = `AttachedWeapon${side}`;
+          holder.userData = { attachmentType: "weapon", side: side.toLowerCase(), kind: "kind" in pick ? pick.kind : pick.name };
+          holder.add(content);
+          hand.anchor.add(holder);
+          held.set(side, { holder, length: WEAPON_LENGTH["kind" in pick ? pick.kind : "sword"] * size.y });
+          placeWeapon(side);
+        },
+        setWeaponPose(side, pose) {
+          weaponPoses.set(side, pose);
+          placeWeapon(side);
+        },
       };
       setClip(0);
       setPaused(false);
@@ -960,6 +1072,7 @@ export function ModelInspector({
         ro.disconnect();
         controls.dispose();
         mixer?.stopAllAction();
+        SIDES.forEach(dropWeapon);
         model.traverse((o) => {
           const m = o as Mesh;
           if (!m.isMesh) return;
@@ -999,6 +1112,35 @@ export function ModelInspector({
     if (playModeRef.current) return;
     engine.current?.playAnimation(paused ? null : clip);
   }, [clip, paused, status]);
+
+  // Preview weapons (poses first: a weapon placed after its file loads uses the latest pose).
+  useEffect(() => {
+    for (const s of SIDES) engine.current?.setWeaponPose(s, weaponPoses[s]);
+  }, [weaponPoses, status]);
+  useEffect(() => {
+    for (const s of SIDES) {
+      engine.current?.setWeapon(s, weapons[s]).catch((err) => {
+        console.error(err);
+        toast.error(tv.weaponLoadFailed);
+        setWeapons((w) => ({ ...w, [s]: null }));
+      });
+    }
+  }, [weapons, status]); // eslint-disable-line react-hooks/exhaustive-deps
+  const armed = status === "ready" && SIDES.some((s) => weapons[s] && stats?.hands.includes(s));
+  useEffect(() => {
+    if (!armed) return onWeaponExport?.(null);
+    onWeaponExport?.(async () => {
+      const e = engine.current;
+      if (!e) throw new Error(tv.loadFailed);
+      try {
+        return await e.exportGlb(true);
+      } finally {
+        const { clip: c, paused: p } = anim.current;
+        if (!playModeRef.current) e.playAnimation(p ? null : c);
+      }
+    });
+    return () => onWeaponExport?.(null);
+  }, [armed]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Game controller: entering play mode hands the mixer to the engine; leaving restores the chosen clip.
   useEffect(() => {
@@ -1167,6 +1309,16 @@ export function ModelInspector({
   const dims = stats?.size.map((v) => v.toFixed(v < 10 ? 2 : 1)).join(" × ");
   const interaction = stats?.animations.findIndex((n) => n.startsWith("Interact")) ?? -1;
   const clipLabel = (name: string) => t.rig.clips[name] ?? name;
+  const pick = weapons[weaponSide];
+  const pose = weaponPoses[weaponSide];
+  const setPose = (patch: Partial<WeaponPose>) => setWeaponPoses((p) => ({ ...p, [weaponSide]: { ...p[weaponSide], ...patch } }));
+  const choose = (next: WeaponPick | null) => setWeapons((w) => ({ ...w, [weaponSide]: next }));
+  const poseSliders: { key: keyof WeaponPose; label: string; min: number; max: number; step: number; fmt: (v: number) => string }[] = [
+    { key: "size", label: tv.weaponSize, min: 0.2, max: 3, step: 0.05, fmt: (v) => `${Math.round(v * 100)}%` },
+    { key: "tilt", label: tv.weaponTilt, min: -180, max: 180, step: 5, fmt: (v) => `${v}°` },
+    { key: "twist", label: tv.weaponTwist, min: -180, max: 180, step: 5, fmt: (v) => `${v}°` },
+    { key: "grip", label: tv.weaponGrip, min: -0.6, max: 0.6, step: 0.02, fmt: (v) => v.toFixed(2) },
+  ];
 
   return (
     <div
@@ -1359,6 +1511,22 @@ export function ModelInspector({
       {/* Animations (rigged models): play in every view mode. Hidden while playing — the game controller owns the mixer. */}
       {ready && stats?.animations.length && !playMode ? (
         <div className="glass absolute right-3 bottom-3 flex max-w-[calc(100%-1.5rem)] items-center gap-0.5 rounded-full p-1 shadow-float ring-1 ring-black/5">
+          {stats.hands.length ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant={weaponPanel ? "secondary" : "ghost"}
+                  size="icon-sm"
+                  aria-label={tv.weaponTry}
+                  aria-pressed={weaponPanel}
+                  onClick={() => setWeaponPanel((o) => !o)}
+                >
+                  <SwordsIcon />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{tv.weaponTry}</TooltipContent>
+            </Tooltip>
+          ) : null}
           <Button
             variant="ghost"
             size="icon-sm"
@@ -1394,6 +1562,77 @@ export function ModelInspector({
               ) : null}
             </DropdownMenuContent>
           </DropdownMenu>
+        </div>
+      ) : null}
+
+      {/* Preview weapon: a mock or an uploaded GLB in either hand, to check the clips' poses. Never saved. */}
+      {ready && stats?.animations.length && stats.hands.length && weaponPanel && !playMode ? (
+        <div className="glass absolute right-3 bottom-15 w-72 max-w-[calc(100%-1.5rem)] space-y-3 rounded-2xl p-3 shadow-float ring-1 ring-black/5">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm font-semibold">{tv.weaponTry}</p>
+            {stats.hands.length > 1 ? (
+              <div className="flex gap-0.5 rounded-full bg-muted p-0.5">
+                {stats.hands.map((s) => (
+                  <Button
+                    key={s}
+                    variant={weaponSide === s ? "secondary" : "ghost"}
+                    size="xs"
+                    className={cn("rounded-full", weaponSide === s && "bg-background shadow-sm")}
+                    onClick={() => setWeaponSide(s)}
+                  >
+                    {tv.weaponHands[s]}
+                  </Button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {[null, ...MOCKS].map((k) => {
+              const on = k ? pick !== null && "kind" in pick && pick.kind === k : pick === null;
+              return (
+                <Button key={k ?? "none"} variant={on ? "default" : "outline"} size="xs" onClick={() => choose(k ? { kind: k } : null)}>
+                  {t.rig.weapons[k ?? "none"]}
+                </Button>
+              );
+            })}
+            <Button
+              variant={pick && "glb" in pick ? "default" : "outline"}
+              size="xs"
+              className="max-w-full"
+              onClick={() => weaponFile.current?.click()}
+            >
+              <span className="truncate">{pick && "glb" in pick ? pick.name : tv.weaponUpload}</span>
+            </Button>
+            <input
+              ref={weaponFile}
+              type="file"
+              accept=".glb,model/gltf-binary"
+              className="hidden"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (file) choose({ name: file.name, glb: await file.arrayBuffer() });
+              }}
+            />
+          </div>
+          {pick ? (
+            <div className="space-y-2.5">
+              {poseSliders.map((s) => (
+                <div key={s.key} className="space-y-1">
+                  <div className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">{s.label}</span>
+                    <span className="font-medium tabular-nums">{s.fmt(pose[s.key])}</span>
+                  </div>
+                  <Slider min={s.min} max={s.max} step={s.step} value={[pose[s.key]]} onValueChange={([v]) => setPose({ [s.key]: v })} />
+                </div>
+              ))}
+              <Button variant="ghost" size="xs" onClick={() => setPose(DEFAULT_POSE)}>
+                <RotateCcwIcon />
+                {tv.weaponReset}
+              </Button>
+            </div>
+          ) : null}
+          <p className="text-xs leading-snug text-muted-foreground">{tv.weaponNote}</p>
         </div>
       ) : null}
 

@@ -3,7 +3,7 @@ import { APP_NAME, OPERATOR_NAME } from "@/lib/config";
 import { getT } from "@/lib/i18n/server";
 import { Logo } from "./logo";
 
-// Disclosures required by the Tencent Hunyuan 3D 2.0 Community License §3(a), §3(c), §3(e).
+// Disclosures required by the Tencent Hunyuan 3D 2.1 Community License §3(a), §3(c), §3(e).
 // The attribution and license notice stay in English, verbatim, in every language.
 export async function SiteFooter() {
   const t = await getT();
@@ -27,8 +27,8 @@ export async function SiteFooter() {
             </a>
           </nav>
           <p>
-            {t.site.operatedBy(APP_NAME, OPERATOR_NAME)} Powered by Tencent Hunyuan. Tencent Hunyuan 3D 2.0 is licensed
-            under the Tencent Hunyuan 3D 2.0 Community License Agreement, Copyright © 2025 Tencent. All Rights Reserved.
+            {t.site.operatedBy(APP_NAME, OPERATOR_NAME)} Powered by Tencent Hunyuan. Tencent Hunyuan 3D 2.1 is licensed
+            under the Tencent Hunyuan 3D 2.1 Community License Agreement, Copyright © 2025 Tencent. All Rights Reserved.
             The trademark rights of “Tencent Hunyuan” are owned by Tencent or its affiliate. Tencent is not affiliated
             with, associated with, sponsoring, or endorsing this service.
           </p>

@@ -16,15 +16,12 @@ asks for it explicitly.
 
 | Stage | Model | Notes |
 |---|---|---|
-| Shape | `tencent/Hunyuan3D-2` / `hunyuan3d-dit-v2-0` | full DiT with its own VAE, 30–50 steps (quality presets) |
-| Texture | `tencent/Hunyuan3D-2` / `hunyuan3d-paint-v2-0` | full Paint model |
-| Delight | `tencent/Hunyuan3D-2` / `hunyuan3d-delight-v2-0` | required by Paint |
+| Shape | `tencent/Hunyuan3D-2.1` / `hunyuan3d-dit-v2-1` + `hunyuan3d-vae-v2-1` | 3.3B, 30–50 steps (quality presets) |
+| Texture | `tencent/Hunyuan3D-2.1` / `hunyuan3d-paintpbr-v2-1` + DINOv2-giant + Real-ESRGAN x4plus | PBR. 9 views × 768 px on CUDA; on the 32 GB Mac 6 × 512 (9 × 768 swaps) |
 | Text → image | `Tencent-Hunyuan/HunyuanDiT-v1.2-Diffusers` | full (non-distilled), `T2I_STEPS=50`. Off on MPS until tested |
 | Background removal | rembg `birefnet-general` (BiRefNet, MIT) | `REMBG_MODEL`. Picked over RMBG-2.0 (CC BY-NC), BEN2, BiRefNet-massive and IS-Net in the 2026-09-23 benchmark below |
 | Refine: image edit | `timbrooks/instruct-pix2pix` | stronger editors (e.g. Qwen-Image-Edit, 20B) don't fit 32 GB next to Hunyuan |
 | Refine: translation | `Helsinki-NLP/opus-mt-vi-en` | VI → EN for the edit prompt |
-| 2.1 shape | `tencent/Hunyuan3D-2.1` / `hunyuan3d-dit-v2-1` + `hunyuan3d-vae-v2-1` | 3.3B, see [0003](0003-hunyuan3d-2.1-side-by-side.md) |
-| 2.1 texture | `tencent/Hunyuan3D-2.1` / `hunyuan3d-paintpbr-v2-1` + DINOv2-giant + Real-ESRGAN x4plus | PBR. 9 views × 768 px on CUDA; on the 32 GB Mac 6 × 512 (9 × 768 swaps) |
 
 - The worker's `CATALOG` lists only the full models. Turbo, fast and mini variants were removed from the
   catalog, and their weights were removed from `data/models`.
@@ -35,7 +32,7 @@ asks for it explicitly.
 
 - Jobs are slower than with the turbo models (shape took about 25 s on the M4 with MPS). Job timeouts and quality
   presets are sized for the full models.
-- Hunyuan3D-2.1 now runs next to 2.0 for comparison ([0003](0003-hunyuan3d-2.1-side-by-side.md)).
+- Hunyuan3D-2.1 is the only engine ([0004](0004-hunyuan3d-2.1-only.md)).
 - Check licenses before commercial use: every auxiliary model must allow commercial use. Hunyuan3D has
   its own Tencent license with territory limits.
 

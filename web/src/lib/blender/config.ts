@@ -14,6 +14,7 @@ const humanoidConfigSchema = z.object({
 
 export const BLENDER_TEMPLATE_CATEGORIES = ["humanoid", "quadruped", "bird", "serpent", "fish"] as const;
 const name = z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,47}$/);
+const plane = z.object({ origin: point, dir: point.refine(p => Math.hypot(...p) >= 1e-8, "Plane direction must be nonzero") }).strict();
 const templateBone = z.object({
   name,
   parent: name.nullable(),
@@ -21,9 +22,13 @@ const templateBone = z.object({
   tail: point,
   deform: z.boolean(),
   rigid: z.boolean().optional(),
+  // Browser heat-skin limits (see BoneSpec), so surface weights match the preview.
+  crisp: z.boolean().optional(),
+  reach: z.object({ center: point, radius: z.number().finite().nonnegative(), plane: plane.optional() }).strict().optional(),
+  cap: plane.optional(),
   gate: z.object({
     origin: point, dir: point, fade: z.number().finite().nonnegative().optional(),
-    planes: z.array(z.object({ origin: point, dir: point.refine(p => Math.hypot(...p) >= 1e-8, "Plane direction must be nonzero") }).strict()).max(4).optional(),
+    planes: z.array(plane).max(4).optional(),
   }).strict().optional(),
 }).strict();
 const templateConfigSchema = z.object({

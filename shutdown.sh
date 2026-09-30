@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stops everything started by start.sh: web app (3000), Hunyuan3D-2.0 / 2.1 workers (8081 / 8082), Postgres (5433).
+# Stops everything started by start.sh: web app (3000), Hunyuan3D-2.1 worker (8081), map worker (8083), Postgres (5433).
 # Idempotent: safe to run even when nothing is running.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -40,10 +40,10 @@ for pid in $(pgrep -f "pnpm dev" 2>/dev/null || true); do
   fi
 done
 
-# 2. Workers (:8081 Hunyuan3D-2.0, :8082 Hunyuan3D-2.1; .venv / .venv21 + server.py under this project)
+# 2. Workers (:8081 Hunyuan3D-2.1, :8083 map; .venv / map/.venv + server.py under this project)
 kill_port 8081
-kill_port 8082
-pkill -f "$ROOT/worker/.venv" 2>/dev/null || true  # also matches .venv21
+kill_port 8083
+pkill -f "$ROOT/worker/.venv" 2>/dev/null || true
 pkill -f "$ROOT/SkinTokens/.venv" 2>/dev/null || true  # auto-rig jobs run in their own session (CUDA hosts)
 for pid in $(pgrep -f "server\.py" 2>/dev/null || true); do
   if lsof -p "$pid" 2>/dev/null | grep -q "$ROOT"; then
@@ -79,6 +79,28 @@ WITH f AS (
 SELECT count(*) FROM f;
 SQL
 )" && echo "==> Cancelled $CANCELLED unfinished job(s)" || echo "    WARNING: could not cancel unfinished jobs" >&2
+    MAPS="$(psql "$DB_URL" -Atq -v ON_ERROR_STOP=1 <<'SQL'
+WITH f AS (
+  UPDATE map_generation
+  SET status = 'failed',
+      error = 'Cancelled: server shut down.' || CASE WHEN cost > 0 THEN ' Your credits were refunded.' ELSE '' END,
+      lease_until = NULL, completed_at = now(), progress_message = NULL
+  WHERE status IN ('queued', 'processing')
+  RETURNING id, user_id, cost
+), r AS (
+  INSERT INTO credit_ledger (id, user_id, delta, reason, generation_id)
+  SELECT gen_random_uuid()::text, user_id, cost, 'refund', id FROM f WHERE cost > 0
+  ON CONFLICT DO NOTHING
+  RETURNING user_id, delta
+), u AS (
+  UPDATE "user" SET credits = credits + s.d
+  FROM (SELECT user_id, sum(delta) AS d FROM r GROUP BY user_id) s
+  WHERE "user".id = s.user_id
+  RETURNING 1
+)
+SELECT count(*) FROM f;
+SQL
+)" && echo "==> Cancelled $MAPS unfinished map job(s)" || echo "    WARNING: could not cancel unfinished map jobs" >&2
   fi
   echo "==> Stopping Postgres"
   pg_ctl -D "$DATA/pgdata" stop
@@ -88,7 +110,7 @@ fi
 
 echo "==> Done. Remaining listeners:"
 ALIVE=0
-for p in 3000 3100 5433 8081 8082; do
+for p in 3000 3100 5433 8081 8083; do
   if lsof -i tcp:"$p" -sTCP:LISTEN >/dev/null 2>&1; then
     echo "    port $p still listening:"
     lsof -i tcp:"$p" -sTCP:LISTEN 2>/dev/null

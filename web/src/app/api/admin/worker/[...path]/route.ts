@@ -4,11 +4,11 @@ import { jsonError, withAdmin } from "@/server/http";
 type Ctx = RouteContext<"/api/admin/worker/[...path]">;
 
 // Forwards admin calls to the GPU worker's /v1/admin/* API (model downloads, config, status),
-// so the worker token never reaches the browser. `X-Engine: hunyuan21` targets the Hunyuan3D-2.1 worker.
+// so the worker token never reaches the browser.
 const forward = withAdmin<Ctx>(async (req, _user, ctx) => {
   const e = env();
   const token = e.HUNYUAN_WORKER_TOKEN;
-  const base = req.headers.get("x-engine") === "hunyuan21" ? e.HUNYUAN21_WORKER_URL : e.HUNYUAN_WORKER_URL;
+  const base = e.HUNYUAN_WORKER_URL;
   if (!base || !token) return jsonError("GPU worker not configured (set HUNYUAN_WORKER_URL and HUNYUAN_WORKER_TOKEN)", 503);
 
   const { path } = await ctx.params;

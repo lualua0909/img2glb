@@ -1,6 +1,6 @@
 # 0003. Run Hunyuan3D-2.1 next to 2.0, picked per job
 
-- Status: Accepted
+- Status: Superseded by [0004](0004-hunyuan3d-2.1-only.md)
 - Date: 2026-09-23
 
 ## Context

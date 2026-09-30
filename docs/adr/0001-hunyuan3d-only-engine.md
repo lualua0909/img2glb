@@ -17,15 +17,14 @@ Hunyuan3D, run by the self-hosted worker in `worker/`, is the only engine.
 
 - Removed: `TRELLIS/`, `img2threejs/`, `worker-trellis/`, `worker-img2threejs/`, the `fal` and `mock`
   providers, `@fal-ai/client`, and the env vars `GENERATION_PROVIDER`, `FAL_*`, `IMG2THREEJS_*`, `TRELLIS_*`.
-- The provider is `hunyuan` (Hunyuan3D-2.0). `HUNYUAN_WORKER_URL` and `HUNYUAN_WORKER_TOKEN` are required.
-  Hunyuan3D-2.1 was later added as a second Hunyuan engine, `hunyuan21` (see [0003](0003-hunyuan3d-2.1-side-by-side.md)).
+- `HUNYUAN_WORKER_URL` and `HUNYUAN_WORKER_TOKEN` are required. The provider is `hunyuan21` (Hunyuan3D-2.1);
+  Hunyuan3D-2.0 (`hunyuan`) was removed in [0004](0004-hunyuan3d-2.1-only.md).
 - `start.sh` always starts the worker on `:8081`. `shutdown.sh` only stops that worker.
-- The `generation.provider` column and settings field stay, with the value `hunyuan`. Jobs from removed
-  providers fail instead of being polled.
+- The `generation.provider` column stays (now `hunyuan21`). Jobs from removed providers fail instead of being
+  polled.
 
 ## Consequences
 
 - There is one code path for generation, refinement, preprocessing and the admin model manager.
 - Development needs the worker running. There's no mock mode.
-- Changing engines means a new ADR. Improvements go into `worker/` and Hunyuan3D, for example the planned
-  Hunyuan3D-2.1 port.
+- Changing engines means a new ADR. Improvements go into `worker/` and Hunyuan3D-2.1.

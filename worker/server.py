@@ -1,6 +1,6 @@
 """
-GPU inference worker for Forma3D, wrapping Tencent Hunyuan3D-2 (https://github.com/Tencent-Hunyuan/Hunyuan3D-2)
-or, with ENGINE=2.1, Hunyuan3D-2.1 (https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1, PBR textures).
+GPU inference worker for Forma3D, wrapping Tencent Hunyuan3D-2.1 (https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1,
+PBR textures).
 
 Modified from the upstream `api_server.py` (NOTICE per Hunyuan3D license §3(b)): adds bearer-token auth,
 a single-GPU FIFO job queue, image-URL input, text-to-3D via HunyuanDiT, a bounded job store with TTL
@@ -24,38 +24,28 @@ API (all routes except /healthz require `Authorization: Bearer $WORKER_TOKEN`):
   GET    /v1/admin/config       PUT /v1/admin/config {...}  (select models; reloads them between jobs)
   GET    /healthz
 
-Both engines can run side by side (one process each, e.g. :8081 and :8082) on one machine: they share
-DATA_ROOT/engine.lock, so only one of them keeps its models in memory. A worker with work asks for the lock
-(DATA_ROOT/engine.want); the holder unloads and hands it over once its own queue is empty.
-
 Storage: everything lives under DATA_ROOT (default ../data next to this repo's web/ and worker/ folders):
   models/          Hugging Face cache (HF_HOME) + rembg weights (edit models download here on first refinement)
-  worker-jobs[-2.1]/        per-job outputs, purged after JOB_TTL_SECONDS
-  worker-config[-2.1].json  model selection saved from the admin CMS
+  worker-jobs/        per-job outputs, purged after JOB_TTL_SECONDS
+  worker-config.json  model selection saved from the admin CMS
 """
 import os
 
-# Must run before huggingface_hub / hy3dgen / rembg are imported: they read these at import time.
+# Must run before huggingface_hub / hy3dshape / rembg are imported: they read these at import time.
 DATA_ROOT = os.path.abspath(
     os.environ.get("DATA_ROOT", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data"))
 )
 os.environ.setdefault("HF_HOME", os.path.join(DATA_ROOT, "models"))
 os.environ.setdefault("U2NET_HOME", os.path.join(DATA_ROOT, "models", "u2net"))
-ENGINE = os.environ.get("ENGINE", "2.0")
-if ENGINE not in ("2.0", "2.1"):
-    raise SystemExit("ENGINE must be 2.0 or 2.1")
-SUFFIX = "" if ENGINE == "2.0" else "-" + ENGINE
-if ENGINE == "2.1":
-    import sys
+import sys  # noqa: E402
 
-    # Hunyuan3D-2.1 is not a package: its shape and paint code are imported from the repo checkout.
-    HY21_REPO = os.path.abspath(os.environ.get("HY21_REPO", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Hunyuan3D-2.1")))
-    sys.path[:0] = [HY21_REPO, os.path.join(HY21_REPO, "hy3dshape"), os.path.join(HY21_REPO, "hy3dpaint")]
-    from torchvision_fix import apply_fix  # basicsr (Real-ESRGAN) imports a module newer torchvision removed
+# Hunyuan3D-2.1 is not a package: its shape and paint code are imported from the repo checkout.
+HY21_REPO = os.path.abspath(os.environ.get("HY21_REPO", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Hunyuan3D-2.1")))
+sys.path[:0] = [HY21_REPO, os.path.join(HY21_REPO, "hy3dshape"), os.path.join(HY21_REPO, "hy3dpaint")]
+from torchvision_fix import apply_fix  # noqa: E402  basicsr (Real-ESRGAN) imports a module newer torchvision removed
 
-    apply_fix()
+apply_fix()
 
-import fcntl  # noqa: E402
 import gc  # noqa: E402
 import hmac  # noqa: E402
 import ipaddress  # noqa: E402
@@ -90,11 +80,8 @@ from huggingface_hub.constants import HF_HUB_CACHE  # noqa: E402
 from PIL import Image  # noqa: E402
 from pydantic import BaseModel, Field, model_validator  # noqa: E402
 
-if ENGINE == "2.0":
-    from hy3dgen.shapegen import DegenerateFaceRemover, FaceReducer, FloaterRemover, Hunyuan3DDiTFlowMatchingPipeline  # noqa: E402
-else:
-    from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline  # noqa: E402
-    from hy3dshape.postprocessors import DegenerateFaceRemover, FaceReducer, FloaterRemover  # noqa: E402
+from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline  # noqa: E402
+from hy3dshape.postprocessors import DegenerateFaceRemover, FaceReducer, FloaterRemover  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("worker")
@@ -107,15 +94,13 @@ if len(TOKEN) < 24:
 DEVICE = os.environ.get("DEVICE") or (
     "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 )
-DATA_DIR = os.environ.get("DATA_DIR", os.path.join(DATA_ROOT, "worker-jobs" + SUFFIX))
-CONFIG_PATH = os.path.join(DATA_ROOT, f"worker-config{SUFFIX}.json")
-ENGINE_LOCK = os.path.join(DATA_ROOT, "engine.lock")
-ENGINE_WANT = os.path.join(DATA_ROOT, "engine.want")
-# Load models at startup (default engine) or only when the first job arrives.
+DATA_DIR = os.environ.get("DATA_DIR", os.path.join(DATA_ROOT, "worker-jobs"))
+CONFIG_PATH = os.path.join(DATA_ROOT, "worker-config.json")
+# Load models at startup or only when the first job arrives.
 LOAD_ON_START = os.environ.get("LOAD_ON_START", "1") == "1"
-# Upstream defaults differ per engine (Hunyuan3D-2 api_server: 5.0, Hunyuan3D-2.1 gradio_app: 7.5).
-DEFAULT_GUIDANCE = 5.0 if ENGINE == "2.0" else 7.5
-# Hunyuan3D-2.1 PBR paint: views (6-9) and view resolution (512 or 768). Upstream's maximum by default.
+# Upstream default (Hunyuan3D-2.1 gradio_app).
+DEFAULT_GUIDANCE = 7.5
+# PBR paint: views (6-9) and view resolution (512 or 768). Upstream's maximum by default.
 PAINT_VIEWS = int(os.environ.get("PAINT_VIEWS", "9"))
 PAINT_RESOLUTION = int(os.environ.get("PAINT_RESOLUTION", "768"))
 REALESRGAN_CKPT = os.environ.get("REALESRGAN_CKPT", os.path.join(DATA_ROOT, "models", "realesrgan", "RealESRGAN_x4plus.pth"))
@@ -146,24 +131,21 @@ T2I_STEPS = int(os.environ.get("T2I_STEPS", "50"))
 ALLOWED_IMAGE_HOSTS = {h.strip() for h in os.environ.get("ALLOWED_IMAGE_HOSTS", "").split(",") if h.strip()}
 
 # Model selection: env gives the defaults, the admin CMS overrides them (saved to CONFIG_PATH).
-HY_REPO = "tencent/Hunyuan3D-2" if ENGINE == "2.0" else "tencent/Hunyuan3D-2.1"
+HY_REPO = "tencent/Hunyuan3D-2.1"
 ENV_MODEL_CONFIG = {
     "shape_model": os.environ.get("SHAPE_MODEL", HY_REPO),
-    "shape_subfolder": os.environ.get("SHAPE_SUBFOLDER", "hunyuan3d-dit-v2-0" if ENGINE == "2.0" else "hunyuan3d-dit-v2-1"),
+    "shape_subfolder": os.environ.get("SHAPE_SUBFOLDER", "hunyuan3d-dit-v2-1"),
     "enable_tex": os.environ.get("ENABLE_TEX", "1") == "1",
     "tex_model": os.environ.get("TEX_MODEL", HY_REPO),
-    "tex_subfolder": os.environ.get("TEX_SUBFOLDER", "hunyuan3d-paint-v2-0" if ENGINE == "2.0" else "hunyuan3d-paintpbr-v2-1"),
+    "tex_subfolder": os.environ.get("TEX_SUBFOLDER", "hunyuan3d-paintpbr-v2-1"),
     "enable_t2i": os.environ.get("ENABLE_T2I", "1") == "1",
     "t2i_model": os.environ.get("T2I_MODEL", "Tencent-Hunyuan/HunyuanDiT-v1.2-Diffusers"),
-    "low_vram": os.environ.get("LOW_VRAM", "0") == "1",
 }
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # Known single-image models. `requires` = other entries the pipeline also loads.
-T2I_ITEM = {"kind": "t2i", "repo_id": "Tencent-Hunyuan/HunyuanDiT-v1.2-Diffusers", "subfolder": "",
-            "label": "HunyuanDiT v1.2 (1.5B)", "note": "Full model, text-to-image stage for text-to-3D.", "requires": []}
-CATALOG_21 = [
+CATALOG = [
     {"kind": "shape", "repo_id": "tencent/Hunyuan3D-2.1", "subfolder": "hunyuan3d-dit-v2-1",
      "label": "Hunyuan3D-DiT v2.1 (3.3B)", "note": "Full model, 50 steps.",
      "requires": [["tencent/Hunyuan3D-2.1", "hunyuan3d-vae-v2-1"]]},
@@ -174,22 +156,9 @@ CATALOG_21 = [
      "requires": [["facebook/dinov2-giant", ""]]},
     {"kind": "texture", "repo_id": "facebook/dinov2-giant", "subfolder": "",
      "label": "DINOv2 giant (1.1B)", "note": "Image features for Paint PBR v2.1.", "requires": []},
-    T2I_ITEM,
+    {"kind": "t2i", "repo_id": "Tencent-Hunyuan/HunyuanDiT-v1.2-Diffusers", "subfolder": "",
+     "label": "HunyuanDiT v1.2 (1.5B)", "note": "Full model, text-to-image stage for text-to-3D.", "requires": []},
 ]
-CATALOG = [
-    {"kind": "shape", "repo_id": "tencent/Hunyuan3D-2", "subfolder": "hunyuan3d-dit-v2-0",
-     "label": "Hunyuan3D-DiT v2.0 (1.1B)", "note": "Full model, best with 30-50 steps.",
-     "requires": []},
-    {"kind": "texture", "repo_id": "tencent/Hunyuan3D-2", "subfolder": "hunyuan3d-paint-v2-0",
-     "label": "Hunyuan3D-Paint v2.0 (1.3B)", "note": "Full texture model.",
-     "requires": [["tencent/Hunyuan3D-2", "hunyuan3d-delight-v2-0"]]},
-    {"kind": "texture", "repo_id": "tencent/Hunyuan3D-2", "subfolder": "hunyuan3d-delight-v2-0",
-     "label": "Hunyuan3D-Delight v2.0 (1.3B)", "note": "Removes lighting from the input; needed by Paint.",
-     "requires": []},
-    T2I_ITEM,
-]
-if ENGINE == "2.1":
-    CATALOG = CATALOG_21
 
 def load_model_config() -> dict:
     try:
@@ -212,8 +181,6 @@ def required_models(cfg: dict) -> set[tuple[str, str]]:
     used = {(cfg["shape_model"], cfg["shape_subfolder"])}
     if cfg["enable_tex"]:
         used.add((cfg["tex_model"], cfg["tex_subfolder"]))
-        if ENGINE == "2.0":
-            used.add((cfg["tex_model"], "hunyuan3d-delight-v2-0"))
     if cfg["enable_t2i"]:
         used.add((cfg["t2i_model"], ""))
     for item in CATALOG:
@@ -227,30 +194,14 @@ class Models:
     def __init__(self, cfg: dict):
         log.info("loading shape model %s/%s", cfg["shape_model"], cfg["shape_subfolder"])
         self.rembg = remove_background
-        if ENGINE == "2.0":
-            self.shape = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
-                cfg["shape_model"], subfolder=cfg["shape_subfolder"], use_safetensors=True, device=DEVICE
-            )
-        else:  # 2.1 ships fp16 .ckpt weights only
-            self.shape = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
-                cfg["shape_model"], subfolder=cfg["shape_subfolder"], device=DEVICE
-            )
-        # FlashVDM swaps in the turbo VAE with approximate decoding; full models keep their own VAE.
-        if "turbo" in cfg["shape_subfolder"]:
-            self.shape.enable_flashvdm(mc_algo="mc")
+        # 2.1 ships fp16 .ckpt weights only
+        self.shape = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+            cfg["shape_model"], subfolder=cfg["shape_subfolder"], device=DEVICE
+        )
         self.tex = None
-        if cfg["enable_tex"] and ENGINE == "2.1":
+        if cfg["enable_tex"]:
             log.info("loading texture model %s/%s", cfg["tex_model"], cfg["tex_subfolder"])
             self.tex = PaintPBR(cfg)
-        elif cfg["enable_tex"]:
-            from hy3dgen.texgen import Hunyuan3DPaintPipeline
-
-            log.info("loading texture model %s/%s", cfg["tex_model"], cfg["tex_subfolder"])
-            # Upstream hardcodes CUDA here; `device` comes from the macOS patch (see mac/README.md).
-            device_kw = {} if DEVICE.startswith("cuda") else {"device": DEVICE}
-            self.tex = Hunyuan3DPaintPipeline.from_pretrained(cfg["tex_model"], subfolder=cfg["tex_subfolder"], **device_kw)
-            if cfg["low_vram"]:
-                self.tex.enable_model_cpu_offload()
         self.t2i = None
         if cfg["enable_t2i"]:
             log.info("loading text-to-image model %s", cfg["t2i_model"])
@@ -259,7 +210,7 @@ class Models:
 
 
 class TextToImage:
-    """HunyuanDiT concept image for text-to-3D, as upstream's hy3dgen.text2image (Hunyuan3D-2.1 has no copy)."""
+    """HunyuanDiT concept image for text-to-3D (Hunyuan3D-2.1 ships no text-to-image stage)."""
 
     POS = ",白色背景,3D风格,最佳质量"
     NEG = (
@@ -390,35 +341,13 @@ class Runtime:
         self.load_error: Optional[str] = None
         self.gpu_lock = threading.Lock()
         self._editor: Optional[Editor] = None
-        self._lock_fd: Optional[int] = None  # held while this engine's models are in memory
-        self.waiting = False  # blocked on the other engine freeing memory
-
-    def acquire_memory(self):
-        """Take DATA_ROOT/engine.lock (called with gpu_lock held). Blocks until the other engine unloads."""
-        if self._lock_fd is not None:
-            return
-        with open(ENGINE_WANT, "w") as f:
-            f.write(ENGINE)
-        fd = os.open(ENGINE_LOCK, os.O_CREAT | os.O_RDWR)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            log.info("waiting for the other engine to free memory")
-            self.waiting = True
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            self.waiting = False
-        self._lock_fd = fd
 
     def unload(self):
-        """Free the models and release the engine lock (called with gpu_lock held)."""
+        """Free the models (called with gpu_lock held)."""
         self.models = None
         self._editor = None
         gc.collect()
         empty_cache()
-        if self._lock_fd is not None:
-            fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
-            os.close(self._lock_fd)
-            self._lock_fd = None
         log.info("models unloaded")
 
     def editor(self) -> Editor:
@@ -433,7 +362,6 @@ class Runtime:
 
     def load_locked(self, cfg: dict):
         """(Re)load models; caller holds gpu_lock."""
-        self.acquire_memory()
         self.loading = True
         previous = self.models is not None and self.config
         self.models = None
@@ -606,7 +534,7 @@ class Job:
         """Estimated percent done: finished stages plus elapsed time in the current one. 100 only once completed."""
         if self.status == "completed":
             return 100
-        if self.stage not in self.expected:  # queued, waiting for memory or loading models
+        if self.stage not in self.expected:  # queued or loading models
             return 0
         stages = list(self.expected)
         done = sum(self.expected[s] for s in stages[: stages.index(self.stage)])
@@ -621,9 +549,9 @@ stage_secs: dict[str, float] = {
     "Preparing image": 2,
     "Editing image": 60,
     "Loading model": 5,
-    "Generating shape": 400 if ENGINE == "2.0" else 580,
+    "Generating shape": 580,
     "Cleaning mesh": 15,
-    "Painting texture": 270 if ENGINE == "2.0" else 500,
+    "Painting texture": 500,
     "Rigging": 120,
 }
 
@@ -878,7 +806,7 @@ def fix_upside_down(mesh: trimesh.Trimesh, image: Image.Image, margin: float = 0
 
 
 def cap_textures(mesh: trimesh.Trimesh, size: int):
-    """Downscale baked maps (2.0: color image, 2.1: PBR maps) so their longest side is at most `size` px."""
+    """Downscale baked PBR maps so their longest side is at most `size` px."""
     m = mesh.visual.material
     for attr in ("image", "baseColorTexture", "metallicRoughnessTexture", "normalTexture", "occlusionTexture", "emissiveTexture"):
         img = getattr(m, attr, None)
@@ -909,11 +837,7 @@ def gpu_loop():
                     log.info("rig job %s completed in %.1fs", job.id, time.time() - t0)
                     continue
                 if rt.models is None:
-                    job.enter("Waiting for memory (other engine)")
-                    t = time.time()
-                    rt.acquire_memory()
                     job.enter("Loading models")
-                    sw.lap("wait_memory", t)
                     t = time.time()
                     rt.load_locked(rt.config)
                     sw.lap("load", t)
@@ -930,26 +854,6 @@ def gpu_loop():
                 sw.lap("total", t0)
                 sw.done()
                 empty_cache()
-
-
-def yield_memory():
-    """Hand the engine lock to the other engine when it asks (engine.want) and this one has nothing to do."""
-    while True:
-        time.sleep(2)
-        if rt._lock_fd is None or not work.empty():
-            continue
-        try:
-            with open(ENGINE_WANT) as f:
-                wanted = f.read().strip()
-        except FileNotFoundError:
-            continue
-        if wanted and wanted != ENGINE and rt.gpu_lock.acquire(blocking=False):
-            try:
-                if work.empty():
-                    log.info("engine %s asked for memory: unloading", wanted)
-                    rt.unload()
-            finally:
-                rt.gpu_lock.release()
 
 
 def janitor():
@@ -983,7 +887,7 @@ def get_job(job_id: str) -> Job:
 def healthz():
     # ready = can take jobs; models load on demand when they are not in memory.
     return {"ok": True, "ready": rt.load_error is None or rt.models is not None, "loaded": rt.models is not None,
-            "engine": ENGINE, "queued": work.qsize(), "device": DEVICE, "autorig": autorig_available()}
+            "queued": work.qsize(), "device": DEVICE, "autorig": autorig_available()}
 
 
 _rembg_session = None
@@ -1076,7 +980,6 @@ def status(job_id: str):
         "queue_position": position,
         "error": job.error,
         "has_concept_image": job.has_concept_image,
-        "engine": ENGINE,
         "timings": job.timings,
     }
 
@@ -1117,7 +1020,6 @@ class ModelConfigIn(BaseModel):
     tex_subfolder: str = Field(pattern=SUBFOLDER, min_length=1, max_length=100)
     enable_t2i: bool
     t2i_model: str = Field(pattern=REPO_ID, max_length=100)
-    low_vram: bool
 
 
 def dl_key(repo_id: str, subfolder: str) -> str:
@@ -1129,23 +1031,12 @@ def pipeline_view(cfg: dict) -> list[dict]:
     lazy (loaded on first refinement), off (disabled)."""
     loaded = "active" if rt.models is not None else "standby"
     tex = loaded if cfg["enable_tex"] else "off"
-    shape = f"{cfg['shape_model']}/{cfg['shape_subfolder']}"
-    if ENGINE == "2.0":
-        stages = [
-            {"stage": "shape", "model": shape, "state": loaded},
-            {"stage": "vae", "model": f"{shape} (built-in)", "state": loaded},
-            {"stage": "texture", "model": f"{cfg['tex_model']}/{cfg['tex_subfolder']}", "state": tex},
-            {"stage": "delight", "model": f"{cfg['tex_model']}/hunyuan3d-delight-v2-0", "state": tex},
-        ]
-    else:
-        stages = [
-            {"stage": "shape", "model": shape, "state": loaded},
-            {"stage": "vae", "model": f"{cfg['shape_model']}/hunyuan3d-vae-v2-1", "state": loaded},
-            {"stage": "texture", "model": f"{cfg['tex_model']}/{cfg['tex_subfolder']} ({PAINT_VIEWS} views @ {PAINT_RESOLUTION}px)", "state": tex},
-            {"stage": "dino", "model": "facebook/dinov2-giant", "state": tex},
-            {"stage": "upscale", "model": "Real-ESRGAN x4plus", "state": tex},
-        ]
-    return stages + [
+    return [
+        {"stage": "shape", "model": f"{cfg['shape_model']}/{cfg['shape_subfolder']}", "state": loaded},
+        {"stage": "vae", "model": f"{cfg['shape_model']}/hunyuan3d-vae-v2-1", "state": loaded},
+        {"stage": "texture", "model": f"{cfg['tex_model']}/{cfg['tex_subfolder']} ({PAINT_VIEWS} views @ {PAINT_RESOLUTION}px)", "state": tex},
+        {"stage": "dino", "model": "facebook/dinov2-giant", "state": tex},
+        {"stage": "upscale", "model": "Real-ESRGAN x4plus", "state": tex},
         {"stage": "t2i", "model": cfg["t2i_model"], "state": loaded if cfg["enable_t2i"] else "off"},
         {"stage": "rembg", "model": f"rembg {REMBG_MODEL}", "state": "active"},
         {"stage": "edit", "model": EDIT_MODEL, "state": "active" if rt._editor is not None else "lazy"},
@@ -1163,9 +1054,7 @@ def admin_status():
     with jobs_lock:
         counts = {s: sum(1 for j in jobs.values() if j.status == s) for s in ("queued", "running", "completed", "failed")}
     return {
-        "engine": ENGINE,
         "device": DEVICE,
-        "waiting_for_memory": rt.waiting,
         "gpu": gpu,
         "disk": {"path": DATA_ROOT, "free_bytes": disk.free, "total_bytes": disk.total},
         "ready": rt.models is not None,
@@ -1209,7 +1098,7 @@ def start_download(repo_id: str, subfolder: str) -> Download:
 @app.post("/v1/admin/models/download", dependencies=[Depends(auth)], status_code=202)
 def admin_download(body: ModelRef):
     d = start_download(body.repo_id, body.subfolder)
-    # Also fetch what the pipeline loads alongside it (e.g. the turbo VAE, the delight model).
+    # Also fetch what the pipeline loads alongside it (e.g. the VAE, DINOv2).
     for item in CATALOG:
         if (item["repo_id"], item["subfolder"]) == (body.repo_id, body.subfolder):
             for repo_id, subfolder in item["requires"]:
@@ -1264,5 +1153,4 @@ if __name__ == "__main__":
     # Serve the admin API right away; models load in the GPU thread (first start downloads weights).
     threading.Thread(target=gpu_loop, daemon=True).start()
     threading.Thread(target=janitor, daemon=True).start()
-    threading.Thread(target=yield_memory, daemon=True).start()
     uvicorn.run(app, host=os.environ.get("HOST", "0.0.0.0"), port=int(os.environ.get("PORT", "8081")), workers=1)

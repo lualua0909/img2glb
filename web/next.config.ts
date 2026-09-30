@@ -12,6 +12,8 @@ const nextConfig: NextConfig = {
   output: "standalone",
   poweredByHeader: false,
   serverExternalPackages: ["draco3dgltf"], // loads its .wasm from its own folder at runtime
+  // proxy.ts buffers request bodies (default 10MB); must cover the largest upload route (rig: 80MB GLB + form overhead)
+  experimental: { proxyClientMaxBodySize: "81mb" },
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },

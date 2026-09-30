@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-// Tencent Hunyuan 3D 2.0 Community License excludes the EU, UK and South Korea from the
+// Tencent Hunyuan 3D 2.1 Community License excludes the EU, UK and South Korea from the
 // licensed Territory (§1.l, §5.c). Override with BLOCKED_COUNTRIES (comma-separated ISO codes).
 const DEFAULT_BLOCKED =
   "AT,BE,BG,HR,CY,CZ,DK,EE,FI,FR,DE,GR,HU,IE,IT,LV,LT,LU,MT,NL,PL,PT,RO,SK,SI,ES,SE,GB,KR";

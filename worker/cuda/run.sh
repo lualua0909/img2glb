@@ -4,11 +4,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 DATA="$(cd .. && pwd)/data"
 
-# Load tencent/Hunyuan3D-2 from the cached HF snapshot (see mac/run.sh).
-SNAP=$(ls -d "$DATA"/models/hub/models--tencent--Hunyuan3D-2/snapshots/*/ 2>/dev/null | head -1)
+# Load tencent/Hunyuan3D-2.1 from the cached HF snapshot (see mac/run.sh).
+SNAP=$(ls -d "$DATA"/models/hub/models--tencent--Hunyuan3D-2.1/snapshots/*/ 2>/dev/null | head -1)
 if [ -n "$SNAP" ]; then
   mkdir -p "$DATA/models/hy3dgen/tencent"
-  ln -sfn "${SNAP%/}" "$DATA/models/hy3dgen/tencent/Hunyuan3D-2"
+  ln -sfn "${SNAP%/}" "$DATA/models/hy3dgen/tencent/Hunyuan3D-2.1"
 fi
 
 export WORKER_TOKEN="${WORKER_TOKEN:-$(grep '^HUNYUAN_WORKER_TOKEN=' ../web/.env.local | cut -d= -f2-)}"

@@ -1,0 +1,20 @@
+# Map worker (worker/map). MoGe itself is installed with --no-deps by setup.sh: its pyproject pins torch to a
+# CUDA index and pulls gradio + flex-gemm (CUDA-only refiner), which we do not use off CUDA.
+torch
+torchvision
+transformers>=5.0
+accelerate
+numpy>=2
+scipy
+trimesh>=4.11
+pillow
+opencv-python-headless
+matplotlib
+click
+tqdm
+requests
+huggingface-hub
+fastapi
+uvicorn
+utils3d_moge @ git+https://github.com/EasternJournalist/utils3d-moge.git@62f09d58509485564e24d5d9f6aac9ee9ebc0c37
+pipeline @ git+https://github.com/EasternJournalist/pipeline.git@1c511390d90226c00c101f34b84df26a0f8789b4

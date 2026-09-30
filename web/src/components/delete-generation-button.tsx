@@ -23,21 +23,24 @@ export function DeleteGenerationButton({
   disabled,
   compact,
   className,
+  kind = "model",
 }: {
   id: string;
   disabled?: boolean;
   compact?: boolean;
   className?: string;
+  kind?: "model" | "map";
 }) {
   const { t } = useI18n();
+  const map = kind === "map";
   const router = useRouter();
   const [busy, setBusy] = useState(false);
 
   async function remove() {
     setBusy(true);
-    const res = await fetch(`/api/generations/${id}`, { method: "DELETE" });
+    const res = await fetch(map ? `/api/maps/${id}` : `/api/generations/${id}`, { method: "DELETE" });
     if (res.ok) {
-      router.push("/app/library");
+      router.push(map ? "/app/maps" : "/app/library");
       router.refresh();
     } else {
       setBusy(false);
@@ -68,8 +71,8 @@ export function DeleteGenerationButton({
       </AlertDialogTrigger>
       <AlertDialogContent size="sm">
         <AlertDialogHeader>
-          <AlertDialogTitle>{t.detail.deleteTitle}</AlertDialogTitle>
-          <AlertDialogDescription>{t.detail.deleteBody}</AlertDialogDescription>
+          <AlertDialogTitle>{map ? t.maps.deleteTitle : t.detail.deleteTitle}</AlertDialogTitle>
+          <AlertDialogDescription>{map ? t.maps.deleteBody : t.detail.deleteBody}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>{t.common.cancel}</AlertDialogCancel>

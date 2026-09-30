@@ -4,7 +4,7 @@ import { type CompressLevel, generationCost, MAX_TEXTURE_SIZE, type Quality, typ
 import { db, schema } from "@/lib/db";
 import type { CompressInfo, Generation, GenerationStats, RefineOptions, RigInfo } from "@/lib/db/schema";
 import { isLocal } from "@/lib/env";
-import { configuredProviders, getProvider } from "@/lib/providers";
+import { getProvider, PROVIDER } from "@/lib/providers";
 import { generationTimeoutMinutes } from "@/lib/generation-timeout";
 import type { StartInput } from "@/lib/providers/types";
 import type { AppSettings } from "@/lib/settings";
@@ -37,8 +37,6 @@ export type CreateInput = {
   /** Texture size cap in px; omitted or MAX_TEXTURE_SIZE = engine native size. */
   textureSize?: number;
   flatShading?: boolean;
-  /** Engine for this job (studio picker); omitted = admin default. */
-  engine?: AppSettings["generation"]["provider"];
 };
 
 export function sniffImageType(b: Uint8Array): "png" | "jpeg" | "webp" | null {
@@ -77,7 +75,7 @@ export async function createGeneration(userId: string, input: CreateInput): Prom
     textureSize: input.textureSize && input.textureSize < MAX_TEXTURE_SIZE ? input.textureSize : null,
     flatShading: input.flatShading ?? false,
     cost: isLocal() ? 0 : generationCost(input, settings.credits),
-    provider: pickEngine(input.engine ?? settings.generation.provider),
+    provider: PROVIDER,
   });
 }
 
@@ -93,7 +91,6 @@ export async function retryGeneration(userId: string, generationId: string): Pro
 
   const settings = await getSettings();
   if (settings.generation.paused) throw new UserFacingError(settings.generation.pausedMessage, 503);
-  const provider = pickEngine(source.provider);
   if (source.mode === "image" && !source.inputImageKey)
     throw new UserFacingError("Reference image is missing", 409);
   const id = crypto.randomUUID();
@@ -116,14 +113,8 @@ export async function retryGeneration(userId: string, generationId: string): Pro
     cost: isLocal() ? 0 : generationCost(source, settings.credits),
     parentId: source.id,
     rootId: source.rootId ?? source.id,
-    provider,
+    provider: PROVIDER,
   });
-}
-
-function pickEngine(name: string) {
-  if (!configuredProviders().includes(name as AppSettings["generation"]["provider"]))
-    throw new UserFacingError(`Engine "${name}" is not configured`, 400);
-  return name;
 }
 
 /** Image guidance for the edit per strength: lower lets the instruction change more of the reference image. */
@@ -166,7 +157,7 @@ export async function createRefinement(userId: string, parentId: string, refine:
       parentId: parent.id,
       rootId: parent.rootId ?? parent.id,
       refine,
-      provider: pickEngine(parent.provider), // a refinement runs on the engine that made the parent
+      provider: PROVIDER,
     },
     {
       prompt: refine.prompt,
@@ -281,8 +272,8 @@ export async function advanceGeneration(id: string): Promise<void> {
   const settings = await getSettings();
   const ageMin = (Date.now() - gen.createdAt.getTime()) / 60_000;
   const timeoutMinutes = generationTimeoutMinutes(settings.limits.jobTimeoutMinutes, gen.providerState);
-  if (!(configuredProviders() as string[]).includes(gen.provider)) {
-    // Job from a removed or unconfigured engine: never poll a worker that is not configured.
+  if (gen.provider !== PROVIDER) {
+    // Job from a removed engine (Hunyuan3D-2.0): never poll a worker that does not know it.
     await failGeneration(id, "Generation provider changed.");
     return;
   }
@@ -492,7 +483,6 @@ export type GenerationDTO = {
   refine: RefineOptions | null;
   rig: RigInfo | null;
   compress: CompressInfo | null;
-  engine: string;
   stats: GenerationStats | null;
 };
 
@@ -527,7 +517,6 @@ export async function toDTO(g: Generation): Promise<GenerationDTO> {
     refine: g.refine,
     rig: g.rig,
     compress: g.compress,
-    engine: g.provider,
     stats: g.stats,
   };
 }

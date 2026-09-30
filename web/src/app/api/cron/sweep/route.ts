@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { env } from "@/lib/env";
 import { sweepActiveGenerations } from "@/server/generations";
+import { sweepActiveMaps } from "@/server/maps";
 
 export const maxDuration = 60;
 
@@ -16,5 +17,6 @@ function authorized(req: Request) {
 export async function GET(req: Request) {
   if (!authorized(req)) return new Response("Unauthorized", { status: 401 });
   const processed = await sweepActiveGenerations();
-  return Response.json({ processed });
+  const maps = await sweepActiveMaps();
+  return Response.json({ processed, maps });
 }

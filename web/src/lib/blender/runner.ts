@@ -58,7 +58,7 @@ export async function runRig(folder: string, input: string, config: RigConfig, o
   await writeFile(path.join(folder, "auto_rig.py"), AUTO_RIG_PY);
   try {
     if (needsSurfaceBinding(config)) {
-      onStage?.("Computing surface weights for winged humanoid");
+      onStage?.("Computing surface weights for humanoid");
       await writeFile(path.join(folder, "surface-weights.json"), JSON.stringify(await surfaceBinding(input, config)));
     } else {
       await rm(path.join(folder, "surface-weights.json"), { force: true });

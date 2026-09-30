@@ -122,9 +122,6 @@ export type StudioOptions = {
   faceCount: AppSettings["faceCount"];
   costs: CreditCosts;
   pausedMessage: string | null;
-  /** Configured Hunyuan3D engines (hunyuan = 2.0, hunyuan21 = 2.1); the picker shows when there are two. */
-  engines: AppSettings["generation"]["provider"][];
-  defaultEngine: AppSettings["generation"]["provider"];
 };
 
 function Section({
@@ -215,7 +212,6 @@ export function Studio({
   const [meshPicked, setMeshPicked] = useState(false);
   const [textureSize, setTextureSize] = useState<TextureSize>(MAX_TEXTURE_SIZE);
   const [texturePicked, setTexturePicked] = useState(false);
-  const [engine, setEngine] = useState(options.defaultEngine);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [current, setCurrent] = useState<GenerationDTO | null>(null);
@@ -320,7 +316,6 @@ export function Studio({
     body.set("faceCount", String(faceCount));
     body.set("flatShading", String(flatShading));
     if (textured) body.set("textureSize", String(textureSize));
-    if (options.engines.length > 1) body.set("engine", engine);
     if (mode === "image" && file) body.set("image", file);
     if (mode === "text") body.set("prompt", prompt.trim());
     try {
@@ -557,26 +552,6 @@ export function Studio({
             })}
           </div>
         </Section>
-
-        {options.engines.length > 1 ? (
-          <Section title={t.studio.engine}>
-            <Tabs
-              value={engine}
-              onValueChange={(v) => setEngine(v as typeof engine)}
-            >
-              <TabsList className="w-full">
-                {options.engines.map((e) => (
-                  <TabsTrigger key={e} value={e}>
-                    {t.engines[e]}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-            </Tabs>
-            <p className="px-1 text-xs text-muted-foreground">
-              {t.studio.engineHint[engine]}
-            </p>
-          </Section>
-        ) : null}
 
         <Section title={t.studio.quality}>
           <Tabs value={quality} onValueChange={(v) => setQuality(v as Quality)}>

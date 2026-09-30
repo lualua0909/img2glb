@@ -3,7 +3,7 @@
 *.log
 *.pid
 
-# --- Upstream Hunyuan3D-2 / 2.1 repos (git submodules; see docs/adr, worker/*/setup*.sh) ---
+# --- Upstream Hunyuan3D-2.1 repo (git submodule; see docs/adr, worker/*/setup.sh) ---
 
 # --- Generated 3D artifacts at root ---
 /*.glb
@@ -49,3 +49,6 @@ npm-debug.log*
 # --- Claude Code local files ---
 CLAUDE.local.md
 .claude/settings.local.json
+
+# --- Map worker: MoGe checkout (worker/map/setup.sh) ---
+/worker/map/MoGe/

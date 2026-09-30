@@ -1,5 +1,6 @@
 import "server-only";
 import { env } from "@/lib/env";
+import { PROVIDER } from "@/lib/providers";
 
 // Auto-rigging on a self-hosted worker (SkinTokens, CUDA hosts only): a worker job with `rig_url` returns the model
 // with a predicted skeleton and skin weights. Workers report whether they can do it in /healthz ("autorig").
@@ -14,13 +15,8 @@ export type AutorigJob = {
 function workers() {
   const e = env();
   const token = e.HUNYUAN_WORKER_TOKEN;
-  if (!token) return [];
-  return (
-    [
-      ["hunyuan", e.HUNYUAN_WORKER_URL],
-      ["hunyuan21", e.HUNYUAN21_WORKER_URL],
-    ] as const
-  ).flatMap(([name, url]) => (url ? [{ name, base: url.replace(/\/$/, ""), auth: { Authorization: `Bearer ${token}` } }] : []));
+  if (!token || !e.HUNYUAN_WORKER_URL) return [];
+  return [{ name: PROVIDER, base: e.HUNYUAN_WORKER_URL.replace(/\/$/, ""), auth: { Authorization: `Bearer ${token}` } }];
 }
 
 const workerByName = (name: string) => workers().find((w) => w.name === name) ?? null;

@@ -30,8 +30,9 @@ const schema = z
     // Generation backend
     HUNYUAN_WORKER_URL: z.url().optional(),
     HUNYUAN_WORKER_TOKEN: z.string().optional(),
-    // Second worker running Hunyuan3D-2.1 (ENGINE=2.1, same token), selectable per job in the studio.
-    HUNYUAN21_WORKER_URL: z.url().optional(),
+    // Map worker (worker/map): game map image -> layered 3D scene. Token defaults to HUNYUAN_WORKER_TOKEN.
+    MAP_WORKER_URL: z.url().optional(),
+    MAP_WORKER_TOKEN: z.string().optional(),
 
     // Billing: VietQR bank transfer, confirmed by an admin. BIN or short code (e.g. 970436 / VCB), see https://api.vietqr.io/v2/banks
     VIETQR_BANK_ID: z.string().optional(),
@@ -75,4 +76,5 @@ export function env(): Env {
 export const isLocal = () => env().APP_ENV === "local";
 export const firebaseEnabled = () =>
   Boolean(env().FIREBASE_PROJECT_ID && env().FIREBASE_CLIENT_EMAIL && env().FIREBASE_PRIVATE_KEY);
+export const mapsEnabled = () => Boolean(env().MAP_WORKER_URL);
 export const billingEnabled = () => !isLocal() && Boolean(env().VIETQR_BANK_ID && env().VIETQR_ACCOUNT_NO);

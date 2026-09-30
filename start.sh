@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Starts everything for local use: Postgres (5433), Hunyuan3D-2.0 worker (8081, background),
-# Hunyuan3D-2.1 worker (8082, background, when set up and HUNYUAN21_WORKER_URL is set), web app (3000, foreground).
+# Starts everything for local use: Postgres (5433), Hunyuan3D-2.1 worker (8081, background), map worker (8083,
+# background, when set up and MAP_WORKER_URL is set), web app (3000, foreground).
 # The workers run on CUDA when the machine has an NVIDIA GPU (worker/cuda/*), else on Apple Silicon (worker/mac/*);
 # WORKER_PLATFORM=cuda|mac overrides the detection.
 # Ctrl+C stops the web app and the workers this script started. Postgres keeps running (pg_ctl -D data/pgdata stop).
@@ -47,7 +47,7 @@ else
   pg_ctl -D "$DATA/pgdata" -o "-p 5433" -l "$DATA/pgdata.log" -w start
 fi
 
-# 2. Hunyuan3D workers. Both can run: they share data/engine.lock, so only one keeps its models in memory.
+# 2. Workers
 start_worker() { # name run-script venv-python port setup-script log
   local name="$1" run="$2" venv="$3" port="$4" setup="$5" logf="$6" pid
   if curl -sf "http://localhost:$port/healthz" >/dev/null; then
@@ -67,9 +67,9 @@ start_worker() { # name run-script venv-python port setup-script log
   done
   echo " ready"
 }
-start_worker "Hunyuan3D-2.0" "$ROOT/worker/$PLATFORM/run.sh" "$ROOT/worker/.venv/bin/python" 8081 "worker/$PLATFORM/setup.sh" worker.log
-if grep -q '^HUNYUAN21_WORKER_URL=' "$ROOT/web/.env.local" 2>/dev/null; then
-  start_worker "Hunyuan3D-2.1" "$ROOT/worker/$PLATFORM/run-2.1.sh" "$ROOT/worker/.venv21/bin/python" 8082 "worker/$PLATFORM/setup-2.1.sh" worker-2.1.log
+start_worker "Hunyuan3D-2.1" "$ROOT/worker/$PLATFORM/run.sh" "$ROOT/worker/.venv/bin/python" 8081 "worker/$PLATFORM/setup.sh" worker.log
+if grep -q '^MAP_WORKER_URL=' "$ROOT/web/.env.local" 2>/dev/null; then
+  start_worker "Map" "$ROOT/worker/map/run.sh" "$ROOT/worker/map/.venv/bin/python" 8083 "worker/map/setup.sh" worker-map.log
 fi
 if [ "$PLATFORM" = cuda ] && [ ! -x "$ROOT/SkinTokens/.venv/bin/python" ]; then
   echo "    AI auto-rig is off: run worker/cuda/setup-skintokens.sh to enable it (then restart)"

@@ -35,16 +35,34 @@ function FormatItem({ label, hint }: { label: string; hint: string }) {
   );
 }
 
-/** GLB is served as-is; other formats are converted in the browser with three.js exporters. */
-export function ExportMenu({ modelUrl, downloadUrl, baseName }: { modelUrl: string; downloadUrl: string; baseName: string }) {
+/**
+ * GLB is served as-is; other formats are converted in the browser with three.js exporters. `withWeapons` (a weapon
+ * attached in the viewer): every format is made from the viewer's export instead, weapon included.
+ */
+export function ExportMenu({
+  modelUrl,
+  downloadUrl,
+  baseName,
+  withWeapons,
+}: {
+  modelUrl: string;
+  downloadUrl: string;
+  baseName: string;
+  withWeapons?: (() => Promise<ArrayBuffer>) | null;
+}) {
   const { t } = useI18n();
-  const [busy, setBusy] = useState<Format | null>(null);
+  const [busy, setBusy] = useState<Format | "glb" | null>(null);
 
-  async function convert(format: Format) {
+  async function convert(format: Format | "glb") {
     setBusy(format);
     try {
       const { gltfLoader } = await import("@/lib/gltf-loader");
-      const gltf = await gltfLoader().loadAsync(modelUrl);
+      const armed = withWeapons ? await withWeapons() : null;
+      if (format === "glb") {
+        if (armed) save(new Blob([armed], { type: "model/gltf-binary" }), `${baseName}.glb`);
+        return;
+      }
+      const gltf = armed ? await gltfLoader().parseAsync(armed, "") : await gltfLoader().loadAsync(modelUrl);
       const scene = gltf.scene;
       if (format === "stl") {
         const { STLExporter } = await import("three/examples/jsm/exporters/STLExporter.js");
@@ -76,11 +94,17 @@ export function ExportMenu({ modelUrl, downloadUrl, baseName }: { modelUrl: stri
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-64">
-        <DropdownMenuItem asChild>
-          <a href={downloadUrl}>
-            <FormatItem label="GLB" hint={t.gen.formats.glb} />
-          </a>
-        </DropdownMenuItem>
+        {withWeapons ? (
+          <DropdownMenuItem onSelect={() => convert("glb")}>
+            <FormatItem label="GLB" hint={t.gen.withWeapon} />
+          </DropdownMenuItem>
+        ) : (
+          <DropdownMenuItem asChild>
+            <a href={downloadUrl}>
+              <FormatItem label="GLB" hint={t.gen.formats.glb} />
+            </a>
+          </DropdownMenuItem>
+        )}
         <DropdownMenuSeparator />
         {FORMATS.map((f) => (
           <DropdownMenuItem key={f} onSelect={() => convert(f)}>
