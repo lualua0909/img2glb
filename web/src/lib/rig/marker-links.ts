@@ -32,7 +32,7 @@ export function markerLinks(category: RigCategory, ids: readonly string[]) {
   for (const side of ["L", "R"]) {
     // Each wing from its own root (not all from the shoulders).
     for (const w of ["wing", "wing2", "wing3"]) chain(`${w}Root${side}`, `${w}Elbow${side}`, `${w}Wrist${side}`, `${w}Tip${side}`);
-    chain(`finRoot${side}`, `finMid${side}`, `finTip${side}`);
+    for (const f of ["fin", "fin2", "fin3"]) chain(`${f}Root${side}`, `${f}Mid${side}`, `${f}Tip${side}`);
     chain("head", `hornTip${side}`);
     for (let i = 1; i <= 4; i++) chain(`feelerRoot${i}${side}`, `feelerTip${i}${side}`);
   }

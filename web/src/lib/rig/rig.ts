@@ -11,7 +11,7 @@ export { RIG_CATEGORIES, type RigCategory } from "./categories";
 export type RigOptions = {
   /** Mirror left markers to the right. Vehicles: wheels on both sides (off = one row, e.g. a motorbike). */
   symmetry: boolean;
-  /** Reverse the forward direction (characters, vehicles, aircraft). */
+  /** Reverse the forward direction: the head and tail ends swap (every category that has a front). */
   flip: boolean;
   /** Wheels per side (vehicles). */
   wheels: number;
@@ -38,12 +38,21 @@ export type RigOptions = {
   armless: boolean;
   /** A third pair of legs between the front and hind ones, e.g. a six-legged beast or an insect (animals). */
   sixLegs: boolean;
+  /**
+   * Insect body plan (animals): legs and wings grouped on the thorax, the abdomen behind it is the tail chain, and the
+   * wings are stiff membranes that beat fast up and down (no folding, no whip-like wave).
+   */
+  insect: boolean;
   /** Five editable neck links and a long tail, for sauropods. */
   longNeck: boolean;
   /** Four short legs along the body, e.g. an Asian dragon (serpents). */
   legs: boolean;
-  /** Pair of pectoral fins with three joints each: a fish's or a dolphin's fins, a manta ray's wings (sea life). */
-  fins: boolean;
+  /**
+   * Pairs of fins with three joints each, front to back (sea life): pair 1 the pectoral fins (a fish's or a dolphin's
+   * fins, a manta ray's wings), the others pelvic or anal fins behind them. Pair 1 is "Fin…", the others "Fin2_…",
+   * "Fin3_…".
+   */
+  fins: number;
   /** How it swims (sea life): see `SwimStyle`. */
   swim: SwimStyle;
   /**
@@ -74,9 +83,10 @@ export const DEFAULT_RIG_OPTIONS: RigOptions = {
   bipedal: false,
   armless: false,
   sixLegs: false,
+  insect: false,
   longNeck: false,
   legs: false,
-  fins: false,
+  fins: 0,
   swim: "fish",
   feelers: 0,
   crests: 0,
@@ -176,6 +186,10 @@ export type RigPlan = {
   weapons?: { Left: Weapon; Right: Weapon };
   /** Sea life: how it swims. */
   swim?: SwimStyle;
+  /** Birds: a neck long and slender enough to sway (other animals tell from their neck bones). */
+  longNeck?: boolean;
+  /** Animals: an insect (see `RigOptions.insect`). */
+  insect?: boolean;
 };
 
 const UP = new Vector3(0, 1, 0);
@@ -289,7 +303,12 @@ type Template = {
   frame(m: ModelData, k: Markers, o: RigOptions): Frame;
   /** Initial marker positions from the mesh shape (plus hidden helper markers the build may use, not in `markers`). */
   guess(m: ModelData, o: RigOptions): Markers;
-  build(m: ModelData, k: Markers, o: RigOptions, fr: Frame): Pick<RigPlan, "bones" | "skin" | "armFloor" | "weapons" | "swim">;
+  build(
+    m: ModelData,
+    k: Markers,
+    o: RigOptions,
+    fr: Frame,
+  ): Pick<RigPlan, "bones" | "skin" | "armFloor" | "weapons" | "swim" | "longNeck" | "insect">;
   /** False when left and right can't be mirrored across one plane (a coiled serpent). */
   mirror?: false;
   /** "…R" markers placed on their own even while symmetry is on. */
@@ -933,6 +952,11 @@ const quadruped: Template = {
     // of them are hind feet when it walks on two legs.
     const six = o.sixLegs && !o.bipedal;
     const pairs = six ? [sMin + 0.75 * len, sMin + 0.5 * len, sMin + 0.25 * len] : [sMin + 0.75 * len, sMin + 0.25 * len];
+    // An insect's legs all hang from its thorax, a short stretch of a long body: start from where the feet are.
+    if (o.insect && low.length) {
+      const [a, b] = spanAlong(low, F);
+      pairs.forEach((_, j) => (pairs[j] = a + ((b - a) * j) / (pairs.length - 1)));
+    }
     if (o.bipedal) pairs[1] = low.length ? low.reduce((a, p) => a + p.dot(F), 0) / low.length : m.center.dot(F);
     else
       for (let it = 0; it < 6; it++) {
@@ -1040,6 +1064,8 @@ const quadruped: Template = {
         ? // Tusks: forward and out to the side, below the skull (the trunk hangs in the middle).
           extreme(m, (p) => p.dot(F) + p.dot(L) - latC, (p) => onHead(p) && p.y < head.y && p.dot(L) > latC + 0.02 * h)
         : extreme(m, (p) => p.y + p.dot(L) - latC, (p) => onHead(p) && p.y > head.y - 0.1 * h && p.dot(L) > latC);
+    const spread = halfWidth > 0.35 * len;
+    const insectTips = o.wings && o.insect && spread ? insectWingTips(m, fr, latC, halfWidth, o.wingPairs) : [];
     if (o.wings)
       for (let pair = 1; pair <= o.wingPairs; pair++) {
         // Pairs one behind the other from the shoulders toward the hips; each takes the wing tip nearest its root.
@@ -1047,13 +1073,16 @@ const quadruped: Template = {
         const root = lerp(shoulders, hips, at0).setY(backAt(front + (rear - front) * at0));
         const zone = (p: Vector3) => nearestPair(p.dot(F), (j) => front + (rear - front) * quadWingAt(j, o.wingPairs), o.wingPairs) === pair;
         const tip =
-          halfWidth > 0.35 * len
+          insectTips[pair - 1] ??
+          (spread
             ? extreme(m, (p) => p.dot(L), (p) => p.y > root.y - 0.15 * h && zone(p))
-            : at(fr, lerp(root, hips, 0.8).dot(F) - 0.2 * (pair - 1) * len, latC + 0.6 * halfWidth, root.y + 0.1 * h);
+            : at(fr, lerp(root, hips, 0.8).dot(F) - 0.2 * (pair - 1) * len, latC + 0.6 * halfWidth, root.y + 0.1 * h));
         const w = wingMarker(pair);
+        // An insect's wing is a flat, straight membrane: its joints lie on the line to the tip.
+        const arch = o.insect ? 0 : h;
         k[`${w}TipL`] = tip;
-        k[`${w}ElbowL`] = lerp(root, tip, 0.35).addScaledVector(UP, 0.08 * h);
-        k[`${w}WristL`] = lerp(root, tip, 0.7).addScaledVector(UP, 0.04 * h);
+        k[`${w}ElbowL`] = lerp(root, tip, 0.35).addScaledVector(UP, 0.08 * arch);
+        k[`${w}WristL`] = lerp(root, tip, 0.7).addScaledVector(UP, 0.04 * arch);
         k[`${w}RootL`] = lerp(lerp(shoulders, hips, at0), k[`${w}ElbowL`], 0.25);
       }
     return mirrorMarkers(k, fr, m.center);
@@ -1071,8 +1100,9 @@ const quadruped: Template = {
     // doesn't swing the rump.
     const tailDir = k.tailTip.clone().sub(k.hips);
     const rumpR = radiusAt(m, k.hips, tailDir);
-    let tb = 0.85;
-    for (let t = 0.3; t < 0.85; t += 0.05)
+    // An insect's abdomen, the whole of it behind the thorax, is the tail.
+    let tb = o.insect ? 0.05 : 0.85;
+    for (let t = 0.3; !o.insect && t < 0.85; t += 0.05)
       if (radiusAt(m, lerp(k.hips, k.tailTip, t), tailDir) < 0.35 * rumpR) {
         tb = t;
         break;
@@ -1156,7 +1186,7 @@ const quadruped: Template = {
           leg(bone(`${pos}Foot${s}`, `${pos}LowerLeg${s}`, paw, paw.clone().addScaledVector(F, 0.04 * len).setY(m.box.min.y))),
         );
       }
-    return { bones, skin: { mode: "heat" } };
+    return { bones, skin: { mode: "heat" }, insect: o.insect };
   },
 };
 
@@ -1165,6 +1195,39 @@ function nearestPair(s: number, rootAt: (pair: number) => number, pairs: number)
   let best = 1;
   for (let j = 2; j <= pairs; j++) if (Math.abs(s - rootAt(j)) < Math.abs(s - rootAt(best))) best = j;
   return best;
+}
+
+/** Largest and smallest of `points` along `axis`. */
+function spanAlong(points: Vector3[], axis: Vector3): [number, number] {
+  let [a, b] = [-Infinity, Infinity];
+  for (const p of points) [a, b] = [Math.max(a, p.dot(axis)), Math.min(b, p.dot(axis))];
+  return [a, b];
+}
+
+/**
+ * Left wing tips of an insect with spread wings, front pair first: the wings' outer parts split along the body into
+ * one group per pair (k-means; an insect's wings root close together, so the nearest-root zones of other flyers
+ * would hand one wing's corner to the next pair), each tip in the middle of its group's outermost edge.
+ */
+function insectWingTips(m: ModelData, fr: Frame, latC: number, halfWidth: number, pairs: number) {
+  const { forward: F, lateral: L } = fr;
+  const outer: Vector3[] = [];
+  const v = new Vector3();
+  for (let i = 0; i < m.count; i++) if (vertexAt(m, i, v).dot(L) > latC + 0.6 * halfWidth) outer.push(v.clone());
+  const [a, b] = spanAlong(outer, F);
+  const centers = Array.from({ length: pairs }, (_, j) => (pairs > 1 ? a + ((b - a) * j) / (pairs - 1) : (a + b) / 2));
+  let groups: Vector3[][] = [];
+  for (let it = 0; it < 8; it++) {
+    groups = centers.map(() => []);
+    for (const p of outer) groups[nearestPair(p.dot(F), (j) => centers[j - 1], pairs) - 1].push(p);
+    groups.forEach((g, j) => g.length && (centers[j] = g.reduce((sum, p) => sum + p.dot(F), 0) / g.length));
+  }
+  return groups.map((g) => {
+    if (!g.length) return undefined;
+    const edge = spanAlong(g, L)[0] - 0.05 * halfWidth;
+    const tip = g.filter((p) => p.dot(L) > edge);
+    return tip.reduce((sum, p) => sum.add(p), new Vector3()).divideScalar(tip.length);
+  });
 }
 
 /** Where wing pair `pair` of `pairs` roots on a bird: 0 at the chest, 1 at the tail tip. */
@@ -1236,9 +1299,14 @@ const bird: Template = {
     // A flyer without legs is modeled in flight, level, and a wing may rise above its head: its head is the far end
     // of the mid-plane, at the solid end of its length (a tail ends in thin fins or flukes).
     const ahead = lat.clone().cross(UP);
-    const top = o.legless
+    let top = o.legless
       ? extreme(m, (v) => v.dot(ahead) * thickerEnd(m, ahead) * (o.flip ? -1 : 1), onMid)
       : extreme(m, (v) => v.y, onMid);
+    // `flip` on a perched bird: the head is the top of the other half of the mid-plane.
+    if (o.flip && !o.legless) {
+      const side = Math.sign(top.clone().sub(m.center).dot(ahead)) || 1;
+      top = extreme(m, (v) => v.y, (v) => onMid(v) && side * v.clone().sub(m.center).dot(ahead) < 0);
+    }
     const fr = frameOf(ahead.multiplyScalar(Math.sign(top.clone().sub(m.center).dot(ahead)) || 1));
     const { forward: F, lateral: L } = fr;
     const { len } = range(m, F);
@@ -1327,7 +1395,10 @@ const bird: Template = {
         bone(`Foot${s}`, `Leg${s}`, foot.clone().addScaledVector(UP, 0.03 * h), foot.clone().addScaledVector(F, 0.05 * len)),
       );
     }
-    return { bones, skin: { mode: "heat" } };
+    // A long neck: slender halfway to the head (a stocky bird's chest runs right up to its head).
+    const along = k.head.clone().sub(k.chest);
+    const longNeck = radiusAt(m, neck, along) < 0.6 * radiusAt(m, k.chest, along);
+    return { bones, skin: { mode: "heat" }, longNeck };
   },
 };
 
@@ -1342,23 +1413,27 @@ function chainBones(m: ModelData, names: string[], start: Vector3, end: Vector3,
 
 const FISH_SPINE = ["Spine1", "Spine2", "Spine3", "Spine4", "Spine5", "Spine6"];
 const FISH_STOPS = [0.08, 0.25, 0.42, 0.58, 0.72, 0.86];
-const FIN_JOINTS = ["finRoot", "finMid", "finTip"];
+export const MAX_FIN_PAIRS = 3;
+/** Marker prefix of a fin pair (1 = the front one). */
+const finMarker = (pair: number) => `fin${pair > 1 ? pair : ""}`;
+/** Root, middle and tip markers of every fin pair, left and right. */
+const finIds = (pairs: number) =>
+  Array.from({ length: pairs }, (_, i) => ["Root", "Mid", "Tip"].flatMap((j) => [`${finMarker(i + 1)}${j}L`, `${finMarker(i + 1)}${j}R`])).flat();
+/** Bone of joint `joint` (1 = at the body) of fin pair `pair`, without its side: "Fin2", "Fin2_3". */
+export const finBone = (pair: number, joint: number) => `Fin${pair > 1 ? `${pair}_` : ""}${joint}`;
 
 /**
- * Pectoral fin from its root on the body through the middle marker to the tip: three links, so a ray's wing beat
- * travels out to the tip. Gated sideways like a bird's wing (`mid`: a point on the body's mid-plane and its lateral
- * axis), so a beating fin leaves the body and the other fin alone.
+ * Fin from its root on the body through the middle marker to the tip: three links, so a ray's wing beat travels out
+ * to the tip. Gated sideways like a bird's wing (`mid`: a point on the body's mid-plane and its lateral axis), so a
+ * beating fin leaves the body and the other fin alone. `pair` picks the fin pair (1 = the front one).
  */
-function finBones(k: Markers, s: string, parent: string, mid: { at: Vector3; lateral: Vector3 }) {
-  const [root, elbow, tip] = FIN_JOINTS.map((j) => k[j + s]);
+function finBones(k: Markers, s: string, parent: string, mid: { at: Vector3; lateral: Vector3 }, pair: number) {
+  const [root, elbow, tip] = ["Root", "Mid", "Tip"].map((j) => k[`${finMarker(pair)}${j}${s}`]);
   const wrist = lerp(elbow, tip, 0.5);
   const dir = mid.lateral.clone().multiplyScalar(Math.sign(elbow.clone().sub(root).dot(mid.lateral)) || 1);
   const gate = { origin: root, dir, fade: 0.5 * Math.max(0, root.clone().sub(mid.at).dot(dir)) };
-  return [
-    bone(`Fin1${s}`, parent, root, elbow),
-    bone(`Fin2${s}`, `Fin1${s}`, elbow, wrist),
-    bone(`Fin3${s}`, `Fin2${s}`, wrist, tip),
-  ].map((b) => ({ ...b, gate }));
+  const [b1, b2, b3] = [1, 2, 3].map((j) => `${finBone(pair, j)}${s}`);
+  return [bone(b1, parent, root, elbow), bone(b2, b1, elbow, wrist), bone(b3, b2, wrist, tip)].map((b) => ({ ...b, gate }));
 }
 
 const fish: Template = {
@@ -1367,13 +1442,13 @@ const fish: Template = {
     ...(o.jaw ? ["jawTip"] : []),
     ...(o.horns === 1 ? ["hornTip"] : o.horns >= 2 ? ["hornTipL", "hornTipR"] : []),
     "tailTip",
-    ...(o.fins ? FIN_JOINTS.flatMap((j) => [`${j}L`, `${j}R`]) : []),
+    ...finIds(o.fins),
   ],
   frame: (_m, k) => frameOf(k.head.clone().sub(k.tailTip)),
   guess(m, o) {
     // A ray's fins span wider than it is long: its body runs across the axis it is mirror-symmetric about.
     const axis = o.swim === "ray" ? (asymmetry(m, X) <= asymmetry(m, Z) ? Z.clone() : X.clone()) : longAxis(m);
-    // The head end is the heavier one.
+    // The head end is the heavier one (the other one with `flip`).
     const { min, len } = range(m, axis);
     let [front, back] = [0, 0];
     const v = new Vector3();
@@ -1382,7 +1457,7 @@ const fish: Template = {
       if (s > 0.7) front++;
       else if (s < 0.3) back++;
     }
-    const F = axis.multiplyScalar(front >= back ? 1 : -1);
+    const F = axis.multiplyScalar((front >= back) !== o.flip ? 1 : -1);
     const L = UP.clone().cross(F).normalize();
     const mid = (p: Vector3) => midDepth(m, midDepth(m, p, L), UP);
     const k: Markers = { head: mid(extreme(m, (p) => p.dot(F))), tailTip: mid(extreme(m, (p) => -p.dot(F))) };
@@ -1401,21 +1476,28 @@ const fish: Template = {
     const hornScore = (p: Vector3) => p.y + 0.5 * p.dot(F);
     if (o.horns === 1) k.hornTip = extreme(m, hornScore, onHead);
     else if (o.horns >= 2) k.hornTipL = extreme(m, hornScore, (p) => onHead(p) && p.dot(L) > latC + 0.02 * m.size.length());
-    if (o.fins) {
+    const spineY = (p: Vector3) => lerp(k.head, k.tailTip, along(p)).y;
+    let band = [0.12, o.fins > 1 ? 0.12 + 0.7 / o.fins : 0.55];
+    for (let pair = 1; pair <= o.fins; pair++) {
       // Pectoral fin tip: a ray's widest point; a fish's or a whale's in the front half of the body, below its spine.
-      const spineY = (p: Vector3) => lerp(k.head, k.tailTip, along(p)).y;
+      // The pairs behind it (pelvic, anal fins) share out the rest of the body: below the spine on a fish or a whale,
+      // the widest point there on a ray.
+      const [lo, hi] = band;
       const tip =
-        o.swim === "ray"
+        o.swim === "ray" && pair === 1
           ? extreme(m, (p) => p.dot(L))
-          : extreme(m, (p) => p.dot(L), (p) => along(p) > 0.12 && along(p) < 0.55 && p.y < spineY(p));
+          : extreme(m, (p) => p.dot(L), (p) => along(p) > lo && along(p) < hi && (o.swim === "ray" || p.y < spineY(p)));
+      if (pair === 1 && o.swim === "ray") band = [along(tip) + 0.15, along(tip) + 0.15 + (0.75 - along(tip)) / Math.max(1, o.fins - 1)];
+      else band = [hi, 2 * hi - lo];
       // Root: out from the spine toward the tip, inside the body wall (a ray's fin starts well inside its disc).
       const spine = nearestDepth(m, lerp(k.head, k.tailTip, Math.min(Math.max(along(tip), 0), 1)), UP);
       const out = tip.clone().sub(spine);
       const wall = raycastAll(m, spine, out.clone().normalize())[0]?.distance ?? 0;
       const root = spine.clone().addScaledVector(out.clone().normalize(), Math.min(0.7 * wall, 0.3 * out.length()));
-      k.finRootL = root;
-      k.finMidL = inside(m, lerp(root, tip, 0.5), [UP, F]);
-      k.finTipL = tip;
+      const f = finMarker(pair);
+      k[`${f}RootL`] = root;
+      k[`${f}MidL`] = inside(m, lerp(root, tip, 0.5), [UP, F]);
+      k[`${f}TipL`] = tip;
     }
     return mirrorMarkers(k, fr, m.center);
   },
@@ -1438,14 +1520,14 @@ const fish: Template = {
     const skull = { ...k, head: lerp(k.head, k.tailTip, 0.12) };
     if (k.jawTip) bones.push(jawBone(skull, fr, k.head));
     bones.push(...hornBones(skull));
-    if (o.fins)
+    for (let pair = 1; pair <= o.fins; pair++)
       for (const [s] of SIDES) {
         // Each fin hangs from the spine joint nearest to its root.
-        const root = k[`finRoot${s}`];
+        const root = k[`${finMarker(pair)}Root${s}`];
         const parent = bones
           .filter((b) => FISH_SPINE.includes(b.name))
           .reduce((a, b) => (b.head.distanceTo(root) < a.head.distanceTo(root) ? b : a));
-        bones.push(...finBones(k, s, parent.name, { at: parent.head, lateral: fr.lateral }));
+        bones.push(...finBones(k, s, parent.name, { at: parent.head, lateral: fr.lateral }, pair));
       }
     return { bones, skin: { mode: "heat" }, swim: o.swim };
   },
@@ -1453,12 +1535,22 @@ const fish: Template = {
 
 // ---------------------------------------------------------------- serpent: snakes, Asian dragons
 
+/** Level-set slices of a long body along the geodesic distance from one of its ends. */
+const BANDS = 64;
+
 /**
- * Center line of a long body, however it is coiled: the two surface points farthest apart over the mesh (geodesic
- * double sweep) are the ends, the thicker one the head; `at(f)` is the middle of the ring of vertices at fraction `f`
- * of the geodesic distance from the snout tip.
+ * Center line of a long body, however it is coiled, and the parts sticking out of it (legs, whiskers, horns). The
+ * vertices are sliced by their geodesic distance from an end and each slice split into its connected pieces: a tree
+ * in which a leg or a whisker branches off the body. Walking from an end into the biggest piece at every fork follows
+ * the body (a dragon's long whiskers reach farther than its snout, but they are thinner), up to its other end; done
+ * twice, from the farthest point of the mesh and then from where that walk ends, it runs from one end of the body to
+ * the other, the thicker end being the head (the other one with `flip`: a dragon's bushy tail tip can be thicker).
+ *
+ * `at(f)` is the middle of the body at fraction `f` of the way from the snout tip to the tail tip, `radius(f)` its mean
+ * distance to the surface there. `branches` are the parts sticking out: `f` where each leaves the body, its center
+ * line from there (`path`) and its far end (`tip`).
  */
-function bodyLine(m: ModelData) {
+function bodyLine(m: ModelData, flip = false) {
   const { offs, adj } = adjacency(m);
   const [v, w] = [new Vector3(), new Vector3()];
   const sweep = (from: number) => {
@@ -1482,26 +1574,96 @@ function bodyLine(m: ModelData) {
     }
     return { dist, far };
   };
-  // Start from an end of the long axis, so the sweep runs on the body and not on a loose part (an eye).
+  /** Slices from `from` split into their connected pieces, and the trunk through them. */
+  const slice = (from: number) => {
+    const { dist, far } = sweep(from);
+    const D = Math.max(dist[far], 1e-9);
+    const band = (i: number) => (dist[i] < Infinity ? Math.min(BANDS - 1, Math.floor((dist[i] / D) * BANDS)) : -1);
+    const root = Int32Array.from({ length: m.count }, (_, i) => i);
+    const find = (i: number) => {
+      while (root[i] !== i) i = root[i] = root[root[i]];
+      return i;
+    };
+    for (let i = 0; i < m.count; i++)
+      for (let e = offs[i]; e < offs[i + 1]; e++) if (band(i) >= 0 && band(i) === band(adj[e])) root[find(i)] = find(adj[e]);
+    const piece = new Int32Array(m.count).fill(-1);
+    const ids = new Map<number, number>();
+    const pieces: { band: number; verts: number[]; center: Vector3; radius: number; next: Set<number> }[] = [];
+    for (let i = 0; i < m.count; i++) {
+      if (band(i) < 0) continue;
+      const r = find(i);
+      if (!ids.has(r)) {
+        ids.set(r, pieces.length);
+        pieces.push({ band: band(i), verts: [], center: new Vector3(), radius: 0, next: new Set() });
+      }
+      piece[i] = ids.get(r)!;
+      pieces[piece[i]].verts.push(i);
+    }
+    for (const p of pieces) {
+      p.verts.forEach((i) => p.center.add(vertexAt(m, i, v)));
+      p.center.divideScalar(p.verts.length);
+      p.radius = p.verts.reduce((a, i) => a + vertexAt(m, i, v).distanceTo(p.center), 0) / p.verts.length;
+    }
+    for (let i = 0; i < m.count; i++)
+      for (let e = offs[i]; e < offs[i + 1]; e++) if (band(i) >= 0 && band(adj[e]) === band(i) + 1) pieces[piece[i]].next.add(piece[adj[e]]);
+    /** From a piece on into the biggest piece at every fork, to the end of that part. */
+    const follow = (p: number) => {
+      const out = [p];
+      while (pieces[out.at(-1)!].next.size)
+        out.push([...pieces[out.at(-1)!].next].reduce((a, b) => (pieces[b].verts.length > pieces[a].verts.length ? b : a)));
+      return out;
+    };
+    const trunk = follow(piece[from]);
+    /** Farthest vertex of a piece from `from`. */
+    const end = (p: number) => pieces[p].verts.reduce((a, i) => (dist[i] > dist[a] ? i : a));
+    return { dist, D, pieces, trunk, follow, end };
+  };
   const axis = longAxis(m);
   let start = 0;
   for (let i = 1; i < m.count; i++) if (vertexAt(m, i, v).dot(axis) > vertexAt(m, start, w).dot(axis)) start = i;
-  let end = sweep(start).far;
-  let { dist, far: other } = sweep(end);
-  const D = Math.max(dist[other], 1e-9);
-  /** Vertices around the body at fraction `f` of the way from `end`: their middle and mean distance to it. */
-  const ring = (f: number) => {
-    const pts: Vector3[] = [];
-    for (let i = 0; i < m.count; i++) if (Math.abs(dist[i] - f * D) < 0.02 * D) pts.push(vertexAt(m, i));
-    const c = pts.reduce((a, p) => a.add(p), new Vector3()).divideScalar(Math.max(pts.length, 1));
-    return { c: pts.length ? c : null, r: pts.reduce((a, p) => a + p.distanceTo(c), 0) / Math.max(pts.length, 1) };
+  const first = slice(sweep(start).far);
+  const from = first.end(first.trunk.at(-1)!);
+  const s = slice(from);
+  const to = s.end(s.trunk.at(-1)!);
+  // Center line from `from` to `to`: the ends and the middle of each slice of the body between them.
+  const pts = [vertexAt(m, from), ...s.trunk.map((p) => s.pieces[p].center), vertexAt(m, to)];
+  // Fraction of the way along it (the farthest point of the mesh may be past its end: a whisker's tip).
+  const along = (p: number) => Math.min(1, ((s.pieces[p].band + 0.5) / BANDS) * (s.D / s.dist[to]));
+  const d = [0, ...s.trunk.map(along), 1];
+  const r = [0, ...s.trunk.map((p) => s.pieces[p].radius), 0];
+  const mean = (a: number, b: number) => {
+    const sel = r.filter((_, j) => d[j] >= a && d[j] <= b);
+    return sel.reduce((x, y) => x + y, 0) / Math.max(sel.length, 1);
   };
-  if (ring(0.92).r > ring(0.08).r) {
-    [end, other] = [other, end];
-    ({ dist } = sweep(end));
-  }
-  const at = (f: number) => ring(f).c ?? vertexAt(m, f < 0.5 ? end : other);
-  return { nose: vertexAt(m, end), tail: vertexAt(m, other), at };
+  // `toLine` turns a fraction of the way from the snout tip into one along the line.
+  const headFirst = mean(0.05, 0.15) >= mean(0.85, 0.95) !== flip;
+  const toLine = (f: number) => (headFirst ? f : 1 - f);
+  const lookup = <T,>(f: number, vals: T[], mix: (a: T, b: T, t: number) => T) => {
+    const x = toLine(Math.min(1, Math.max(0, f)));
+    let j = 1;
+    while (j < d.length - 1 && d[j] < x) j++;
+    return mix(vals[j - 1], vals[j], (x - d[j - 1]) / Math.max(d[j] - d[j - 1], 1e-9));
+  };
+  const onTrunk = new Set(s.trunk);
+  const branches = s.trunk.flatMap((t) =>
+    [...s.pieces[t].next]
+      .filter((p) => !onTrunk.has(p))
+      .map((p) => {
+        const run = s.follow(p);
+        return {
+          f: toLine(along(t)),
+          path: [...run.map((q) => s.pieces[q].center), vertexAt(m, s.end(run.at(-1)!))],
+          tip: vertexAt(m, s.end(run.at(-1)!)),
+        };
+      }),
+  );
+  return {
+    nose: vertexAt(m, headFirst ? from : to),
+    tail: vertexAt(m, headFirst ? to : from),
+    at: (f: number) => lookup(f, pts, lerp),
+    radius: (f: number) => lookup(f, r, (a, b, t) => a + (b - a) * t),
+    branches,
+  };
 }
 
 /** `n` + 1 points evenly spaced along the polyline through `pts`. */
@@ -1539,14 +1701,101 @@ function serpentLine(k: Markers) {
   });
 }
 
+/**
+ * Where the head of a long body ends, as a fraction of the way from the snout tip: the narrowest point of the neck
+ * behind the widest point of the head when the neck is clearly narrower (a dragon's skull is a long stretch of it),
+ * else a short way back (a snake's).
+ */
+function headEnd(line: ReturnType<typeof bodyLine>) {
+  const f = Array.from({ length: 24 }, (_, j) => 0.02 + 0.01 * j);
+  const r = f.map(line.radius);
+  const peak = r.reduce((a, x, j) => (f[j] <= 0.15 && x > r[a] ? j : a), 0);
+  let low = peak;
+  for (let j = peak + 1; j < f.length && r[j] < 1.1 * r[low]; j++) if (r[j] < r[low]) low = j;
+  return r[low] < 0.85 * r[peak] ? f[low] : 0.06;
+}
+
+/**
+ * Feet a long body stands on (an Asian dragon on its legs): the low vertices well below the body line, split by side
+ * and into a front and a rear pair along the body. Null unless all four are there (it lies on the ground, coiled).
+ */
+function standingFeet(m: ModelData, line: ReturnType<typeof bodyLine>): Markers | null {
+  const n = 40;
+  const pts = Array.from({ length: n + 1 }, (_, j) => line.at(j / n));
+  const radius = pts.map((_, j) => line.radius(j / n));
+  const found: { p: Vector3; f: number; left: boolean }[] = [];
+  const v = new Vector3();
+  for (let i = 0; i < m.count; i++) {
+    if (vertexAt(m, i, v).y > m.box.min.y + 0.08 * m.size.y) continue;
+    const j = pts.reduce((a, c, b) => (c.distanceToSquared(v) < pts[a].distanceToSquared(v) ? b : a), 0);
+    if (pts[j].y - v.y < 2 * radius[j]) continue;
+    // Left of the way the body runs toward the head.
+    const toHead = pts[Math.max(j - 1, 0)].clone().sub(pts[Math.min(j + 1, n)]);
+    found.push({ p: v.clone(), f: j / n, left: UP.clone().cross(toHead).dot(v.clone().sub(pts[j])) > 0 });
+  }
+  if (!found.length) return null;
+  // Front and rear pairs: two groups along the body (k-means).
+  const c = [Math.min(...found.map((x) => x.f)), Math.max(...found.map((x) => x.f))];
+  const rear = (f: number) => Math.abs(f - c[1]) < Math.abs(f - c[0]);
+  for (let it = 0; it < 8; it++)
+    c.forEach((_, g) => {
+      const fs = found.filter((x) => rear(x.f) === !!g).map((x) => x.f);
+      if (fs.length) c[g] = fs.reduce((a, f) => a + f, 0) / fs.length;
+    });
+  const out: Markers = {};
+  for (const [pos, g] of [
+    ["front", 0],
+    ["rear", 1],
+  ] as const)
+    for (const s of ["L", "R"]) {
+      const group = found.filter((x) => rear(x.f) === !!g && x.left === (s === "L")).map((x) => x.p);
+      if (!group.length) return null;
+      out[`${pos}Foot${s}`] = group.reduce((a, p) => a.add(p), new Vector3()).divideScalar(group.length);
+    }
+  return out;
+}
+
+/** Hidden markers along a traced feeler, root first: "feelerPath{pair}{side}_{0…FEELER_PATH}". */
+const FEELER_PATH = 16;
+
+/**
+ * Whiskers of a long dragon: the longest parts branching off the front quarter of its body (a whisker may hug the jaw
+ * before it leaves it) that are longer than its legs (a sixth of the body) and don't reach the ground, one per side
+ * and pair, along their center line from where each leaves the body to its tip (hidden markers, so the bones follow
+ * the curve). Strands the mesh lost are left to the generic guess.
+ */
+function traceWhiskers(m: ModelData, line: ReturnType<typeof bodyLine>, k: Markers, n: number): Markers {
+  const length = (pts: Vector3[]) => pts.reduce((a, p, j) => a + (j ? p.distanceTo(pts[j - 1]) : 0), 0);
+  const body = length(Array.from({ length: 21 }, (_, j) => line.at(j / 20)));
+  const { lateral } = frameOf(k.nose.clone().sub(k.head));
+  const whiskers = line.branches
+    .filter((b) => b.f < 0.25 && b.tip.y > m.box.min.y + 0.1 * m.size.y && length(b.path) > body / 6)
+    .sort((a, b) => length(b.path) - length(a.path));
+  const out: Markers = {};
+  for (const [s, sign] of [
+    ["L", 1],
+    ["R", -1],
+  ] as const) {
+    const side = whiskers.filter((b) => sign * b.path.reduce((a, p) => a + p.clone().sub(k.head).dot(lateral), 0) > 0);
+    for (let i = 1; i <= Math.min(n, side.length); i++) {
+      const path = resample(side[i - 1].path, FEELER_PATH);
+      path.forEach((p, j) => (out[`feelerPath${i}${s}_${j}`] = p));
+      out[`feelerRoot${i}${s}`] = path[0].clone();
+      out[`feelerTip${i}${s}`] = path[FEELER_PATH].clone();
+    }
+  }
+  return out;
+}
+
 const serpent: Template = {
   markers: (o) => ["nose", "head", ...(o.jaw ? ["jawTip"] : []), ...BODY_MARKERS, "tailTip", ...(o.legs ? SERPENT_FEET : [])],
   frame: (_m, k) => frameOf(k.nose.clone().sub(k.head)),
   mirror: false,
   guess(m, o) {
-    const line = bodyLine(m);
+    const line = bodyLine(m, o.flip);
     const k: Markers = { nose: line.nose };
-    for (let i = 0; i <= PATH_POINTS; i++) k[`path${i}`] = i < PATH_POINTS ? line.at(0.06 + (0.94 * i) / PATH_POINTS) : line.tail;
+    const head = headEnd(line);
+    for (let i = 0; i <= PATH_POINTS; i++) k[`path${i}`] = i < PATH_POINTS ? line.at(head + ((1 - head) * i) / PATH_POINTS) : line.tail;
     ["head", ...BODY_MARKERS, "tailTip"].forEach((id, j) => (k[id] = k[`path${PATH_ANCHORS[j]}`].clone()));
     const fr = frameOf(k.nose.clone().sub(k.head));
     if (o.jaw) {
@@ -1555,7 +1804,9 @@ const serpent: Template = {
       const under = raycastAll(m, p, UP.clone().negate())[0]?.point.y ?? p.y - 0.05 * m.size.y;
       k.jawTip = p.clone().setY(p.y - 0.6 * (p.y - under));
     }
-    if (o.legs)
+    const feet = o.legs ? standingFeet(m, line) : null;
+    if (feet) Object.assign(k, feet);
+    else if (o.legs)
       for (const [pos, f] of [
         ["front", 0.2],
         ["rear", 0.6],
@@ -1572,6 +1823,7 @@ const serpent: Template = {
         ] as const)
           k[`${pos}Foot${s}`] = c.clone().addScaledVector(side, 1.6 * sign * r).setY(Math.max(m.box.min.y, c.y - 1.5 * r));
       }
+    if (o.feelers) Object.assign(k, traceWhiskers(m, line, k, o.feelers));
     return k;
   },
   build(m, k) {
@@ -1777,9 +2029,10 @@ const feelerIds = (category: RigCategory, o: RigOptions) =>
 
 /**
  * Rough feeler markers, to drag: on each side, the tips are the points around the head sticking out farthest (and
- * highest), each clear of the ones found before; the roots halfway back to the head.
+ * highest), each clear of the ones found before; the roots halfway back to the head. `ahead`: only in front of the head
+ * (an insect's antennae; its wings, legs and abdomen reach farther out behind and below).
  */
-function guessFeelers(m: ModelData, k: Markers, fr: Frame, n: number): Markers {
+function guessFeelers(m: ModelData, k: Markers, fr: Frame, n: number, ahead = false): Markers {
   const size = m.size.length();
   const head = k.head ?? k.chin ?? m.center;
   const latC = (k.groin ?? m.center).dot(fr.lateral);
@@ -1790,6 +2043,7 @@ function guessFeelers(m: ModelData, k: Markers, fr: Frame, n: number): Markers {
       const ok = (p: Vector3) =>
         sgn * (p.dot(fr.lateral) - latC) > 0.01 * size &&
         p.distanceTo(head) < 0.45 * size &&
+        (!ahead || p.dot(fr.forward) > head.dot(fr.forward)) &&
         tips.every((t) => t.distanceTo(p) > 0.08 * size);
       let tip = extreme(m, (p) => p.distanceTo(head) + 0.5 * (p.y - head.y), ok);
       if (!ok(tip)) tip = head.clone().addScaledVector(UP, 0.1 * size).addScaledVector(fr.lateral, sgn * 0.04 * i * size);
@@ -1801,11 +2055,21 @@ function guessFeelers(m: ModelData, k: Markers, fr: Frame, n: number): Markers {
   return out;
 }
 
+/** A feeler from its root to its tip: the traced strand, moved along with its dragged ends, or else straight. */
+function feelerLine(k: Markers, id: string) {
+  const [root, tip] = [k[`feelerRoot${id}`], k[`feelerTip${id}`]];
+  if (!k[`feelerPath${id}_0`]) return [root, tip];
+  const path = Array.from({ length: FEELER_PATH + 1 }, (_, j) => k[`feelerPath${id}_${j}`]);
+  const [a, b] = [root.clone().sub(path[0]), tip.clone().sub(path[FEELER_PATH])];
+  return path.map((p, j) => p.clone().add(lerp(a, b, j / FEELER_PATH)));
+}
+
 /**
- * Three links from each feeler's root to its tip, hanging from the body bone nearest to the root and gated to the tip
- * side of it (like a horn). No attack uses them; the clips make them trail the motion (see `simulateChains`).
+ * Links along each feeler from its root to its tip (three, eight when it is long like a dragon's whiskers, so it can
+ * wave along its length), hanging from the body bone nearest to the root and gated to the tip side of it (like a
+ * horn). No attack uses them; the clips make them trail the motion (see `simulateChains`).
  */
-function feelerBones(k: Markers, n: number, bones: BoneSpec[]): BoneSpec[] {
+function feelerBones(m: ModelData, k: Markers, n: number, bones: BoneSpec[]): BoneSpec[] {
   const body = bones.filter((b) => b.deform && !b.rigid);
   const q = new Vector3();
   const gap = (b: BoneSpec, p: Vector3) => p.distanceTo(new Line3(b.head, b.tail).closestPointToPoint(p, true, q));
@@ -1815,8 +2079,11 @@ function feelerBones(k: Markers, n: number, bones: BoneSpec[]): BoneSpec[] {
       const [root, tip] = [k[`feelerRoot${i}${s}`], k[`feelerTip${i}${s}`]];
       if (!root || !tip || !body.length) continue;
       const parent = body.reduce((a, b) => (gap(b, root) < gap(a, root) ? b : a)).name;
-      const joints = [0, 1 / 3, 2 / 3, 1].map((t) => lerp(root, tip, t));
-      for (let j = 0; j < 3; j++)
+      const line = feelerLine(k, `${i}${s}`);
+      const length = line.reduce((a, p, j) => a + (j ? p.distanceTo(line[j - 1]) : 0), 0);
+      const links = length > 0.3 * m.size.length() ? 8 : 3;
+      const joints = resample(line, links);
+      for (let j = 0; j < links; j++)
         out.push(gated(bone(`Feeler${i}_${j + 1}${s}`, j ? `Feeler${i}_${j}${s}` : parent, joints[j], joints[j + 1]), root, tip));
     }
   return out;
@@ -1924,9 +2191,10 @@ export function guessMarkers(category: RigCategory, m: ModelData, o: RigOptions)
   const k = TEMPLATES[category].guess(m, o);
   const fr = TEMPLATES[category].frame(m, k, o);
   return {
-    ...k,
-    ...(feelerIds(category, o).length ? guessFeelers(m, k, fr, o.feelers) : {}),
+    ...(feelerIds(category, o).length ? guessFeelers(m, k, fr, o.feelers, o.insect) : {}),
     ...(crestIds(category, o).length ? guessCrests(m, fr, o.crests) : {}),
+    // The template's own guesses win (a serpent traces its whiskers along the mesh).
+    ...k,
   };
 }
 
@@ -1945,14 +2213,16 @@ export function syncMirror(category: RigCategory, m: ModelData, k: Markers, o: R
 }
 
 /**
- * Camera axis for placing markers: characters from the front, serpents from above, animals and vehicles from the side,
- * buildings facing their door.
+ * Camera axis for placing markers: characters from the front, serpents from above (from the side when one stands up
+ * on its legs, like an Asian dragon: its feet are under its body), animals and vehicles from the side, buildings facing
+ * their door.
  */
 export function markerView(category: RigCategory, m: ModelData, k: Markers, o: RigOptions): Vector3 {
   if (["humanoid", "plant", "fluid", "prop"].includes(category)) return Z.clone();
   if (category === "building") return rigFrame(category, m, k, o).forward.clone();
+  const standing = o.legs && m.size.y > 0.25 * Math.max(m.size.x, m.size.z);
   // Rays from above: their fins spread flat.
-  if (category === "serpent" || (category === "fish" && o.swim === "ray")) return UP.clone();
+  if ((category === "serpent" && !standing) || (category === "fish" && o.swim === "ray")) return UP.clone();
   return rigFrame(category, m, k, o).lateral.clone();
 }
 
@@ -1984,10 +2254,10 @@ export function boneRadius(m: ModelData, b: BoneSpec) {
 export function planRig(category: RigCategory, m: ModelData, k: Markers, o: RigOptions): RigPlan {
   const t = TEMPLATES[category];
   const frame = t.frame(m, k, o);
-  const { bones, skin, armFloor, weapons, swim } = t.build(m, k, o, frame);
-  if (feelerIds(category, o).length) bones.push(...feelerBones(k, o.feelers, bones));
+  const { bones, skin, armFloor, weapons, swim, longNeck, insect } = t.build(m, k, o, frame);
+  if (feelerIds(category, o).length) bones.push(...feelerBones(m, k, o.feelers, bones));
   if (crestIds(category, o).length) bones.push(...crestBones(k, o.crests, bones));
   const wheelRadius: Record<string, number> = {};
   if (skin.mode === "rigid") for (const w of skin.wheels) wheelRadius[w.bone] = w.radius;
-  return { category, frame, bones, skin, height: m.size.y, length: range(m, frame.forward).len, wheelRadius, armFloor, weapons, swim };
+  return { category, frame, bones, skin, height: m.size.y, length: range(m, frame.forward).len, wheelRadius, armFloor, weapons, swim, longNeck, insect };
 }

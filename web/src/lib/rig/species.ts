@@ -17,6 +17,7 @@ export type Archetype =
   | "fish"
   | "cetacean"
   | "ray"
+  | "insect"
   | "other";
 
 export type Species = {
@@ -122,12 +123,23 @@ export const SPECIES: Species[] = [
     attacks: ["Attack_Strike", "Attack_Constrict"],
   },
   {
+    // Long neck, body and tail on one dense chain, four legs, a pair of long whiskers traced along the mesh (eight
+    // links each); in flight the whole body swims along one wave and the whiskers stream back.
     id: "asianDragon",
     archetype: "longDragon",
     category: "serpent",
-    options: { jaw: true, legs: true },
+    options: { jaw: true, legs: true, feelers: 1 },
     locomotion: ["Fly", "Slither"],
     attacks: ["Attack_Strike", "Attack_Claw", "Attack_TailSwipe"],
+  },
+  {
+    // Six legs and two wing pairs on the thorax, the abdomen a tail chain, antennae; the wings beat fast and stiff.
+    id: "insect",
+    archetype: "insect",
+    category: "quadruped",
+    options: { insect: true, sixLegs: true, wings: true, wingPairs: 2, jaw: true, feelers: 1 },
+    locomotion: ["Walk", "Run", "Fly", "Glide", "Wings_Fold", "Wings_Spread"],
+    attacks: ["Attack_Bite", "Attack_Sting"],
   },
   {
     id: "bear",
@@ -181,7 +193,7 @@ export const SPECIES: Species[] = [
     id: "shark",
     archetype: "fish",
     category: "fish",
-    options: { fins: true, jaw: true, swim: "fish" },
+    options: { fins: 1, jaw: true, swim: "fish" },
     locomotion: ["Swim", "Swim_Fast", "Swim_Idle"],
     attacks: ["Attack_Bite", "Attack_Ram", "Attack_TailSlap"],
   },
@@ -189,7 +201,7 @@ export const SPECIES: Species[] = [
     id: "dolphin",
     archetype: "cetacean",
     category: "fish",
-    options: { fins: true, swim: "whale" },
+    options: { fins: 1, swim: "whale" },
     locomotion: ["Swim", "Swim_Fast", "Swim_Idle"],
     attacks: ["Attack_Ram", "Attack_TailSlap"],
   },
@@ -197,7 +209,7 @@ export const SPECIES: Species[] = [
     id: "whale",
     archetype: "cetacean",
     category: "fish",
-    options: { fins: true, jaw: true, swim: "whale" },
+    options: { fins: 1, jaw: true, swim: "whale" },
     locomotion: ["Swim", "Swim_Fast", "Swim_Idle"],
     attacks: ["Attack_Bite", "Attack_TailSlap", "Attack_FinSlap"],
   },
@@ -206,7 +218,7 @@ export const SPECIES: Species[] = [
     archetype: "ray",
     category: "fish",
     // Horns: the cephalic fins in front of a manta's eyes.
-    options: { fins: true, horns: 2, swim: "ray" },
+    options: { fins: 1, horns: 2, swim: "ray" },
     locomotion: ["Swim", "Swim_Fast", "Swim_Idle", "Glide"],
     attacks: ["Attack_FinSlap", "Attack_TailSlap"],
   },
@@ -218,7 +230,7 @@ export const requiredClips = (s: Species) => ["Idle", ...s.locomotion, ...s.atta
 /** Body type of a rig built without a preset. */
 export function archetypeOf(category: RigCategory, o: RigOptions): Archetype {
   if (category === "humanoid") return "biped";
-  if (category === "quadruped") return o.wings ? "wingedQuadruped" : o.bipedal ? "biped" : "quadruped";
+  if (category === "quadruped") return o.insect ? "insect" : o.wings ? "wingedQuadruped" : o.bipedal ? "biped" : "quadruped";
   if (category === "serpent") return o.legs ? "longDragon" : "serpent";
   if (category === "fish") return o.swim === "whale" ? "cetacean" : o.swim === "ray" ? "ray" : "fish";
   if (category === "bird") return category;

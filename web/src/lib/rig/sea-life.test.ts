@@ -65,7 +65,7 @@ function sample(plan: RigPlan, name: string, bone: string, fractions: number[]) 
 
 test("manta ray: fins with three joints each, fin beat, glide and fin slap", async () => {
   const model = manta();
-  const options = { ...DEFAULT_RIG_OPTIONS, fins: true, swim: "ray" as const };
+  const options = { ...DEFAULT_RIG_OPTIONS, fins: 1, swim: "ray" as const };
   const { markers, plan } = rig(model, options);
   assert.ok(markers.head.z > 0.4, "head at the heavy end");
   assert.ok(markers.finTipL.x > 1 && markers.finTipR.x < -1, "fin tips at the widest points");
@@ -112,7 +112,7 @@ test("manta ray: fins with three joints each, fin beat, glide and fin slap", asy
 test("dolphin beats its tail up and down, a fish side to side", () => {
   const model = dolphin();
   for (const swim of ["whale", "fish"] as const) {
-    const { markers, plan } = rig(model, { ...DEFAULT_RIG_OPTIONS, fins: true, swim });
+    const { markers, plan } = rig(model, { ...DEFAULT_RIG_OPTIONS, fins: 1, swim });
     assert.ok(markers.finTipL.x > 0.2 && markers.finTipL.z > 0, "fin on the front half");
     const [a, b] = sample(plan, "Swim", "Spine6", [0.25, 0.75]);
     const vertical = Math.abs(a.y - b.y);
@@ -134,4 +134,29 @@ test("plain fish keeps the chain skin; a jaw adds Head and Jaw bones", () => {
   const bite = buildClips(jawed).find((c) => c.clip.name === "Attack_Bite")!;
   assert.deepEqual(bite.attack!.bones, ["Jaw", "Head"]);
   assert.ok(bite.clip.tracks.some((t) => t.name === "Jaw.quaternion"));
+});
+
+test("fish with three fin pairs: pectoral, pelvic and anal fins front to back", () => {
+  // Facing +Z, a bigger head at the front, three pairs of small fins low on the body.
+  const model = buildModelData([
+    box(0, 0.5, 0, 0.3, 0.3, 2, 4),
+    box(0, 0.5, 0.8, 0.36, 0.36, 0.4, 2),
+    ...[0.5, 0, -0.4].flatMap((z) => [box(0.3, 0.4, z, 0.3, 0.04, 0.2, 2), box(-0.3, 0.4, z, 0.3, 0.04, 0.2, 2)]),
+  ]);
+  const { markers, plan } = rig(model, { ...DEFAULT_RIG_OPTIONS, fins: 3 });
+  [0.5, 0, -0.4].forEach((z, i) => {
+    const tip = markers[`fin${i ? i + 1 : ""}TipL`];
+    assert.ok(Math.abs(tip.z - z) < 0.15 && tip.x > 0.3, `fin pair ${i + 1} tip on its fin: ${tip.toArray()}`);
+  });
+  for (const pre of ["Fin", "Fin2_", "Fin3_"])
+    for (const s of ["L", "R"])
+      for (const j of [1, 2, 3]) assert.ok(plan.bones.some((b) => b.name === `${pre}${j}${s}`), `${pre}${j}${s}`);
+  assert.match(plan.bones.find((b) => b.name === "Fin3_1L")!.parent!, /^Spine/);
+
+  for (const { clip } of buildClips(plan)) for (const track of clip.tracks) assert.ok(Array.from(track.values).every(Number.isFinite));
+  const [a, b] = sample(plan, "Swim", "Fin3_3L", [0.25, 0.75]);
+  assert.ok(a.distanceTo(b) > 0.01, "rear fins beat too");
+
+  const fewer = rig(model, { ...DEFAULT_RIG_OPTIONS, fins: 1 }).plan;
+  assert.ok(!fewer.bones.some((b) => b.name.startsWith("Fin2_")));
 });

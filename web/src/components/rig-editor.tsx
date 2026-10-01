@@ -48,6 +48,7 @@ import {
   type Markers,
   MAX_CRESTS,
   MAX_FEELERS,
+  MAX_FIN_PAIRS,
   MAX_WING_PAIRS,
   planRig,
   RIG_CATEGORIES,
@@ -425,6 +426,8 @@ export function RigEditor({
     if (crest) return tr.crest(Number(crest[2]), crest[1] === "Tip");
     const wing = /^wing(\d)(Root|Elbow|Wrist|Tip)([LR])$/.exec(id);
     if (wing) return tr.wingJoint(Number(wing[1]), wing[3], wing[2] as "Root" | "Elbow" | "Wrist" | "Tip");
+    const fin = /^fin(\d)(Root|Mid|Tip)([LR])$/.exec(id);
+    if (fin) return tr.finJoint(Number(fin[1]), fin[3], fin[2] as "Root" | "Mid" | "Tip");
     return tr.markers[id] ?? id;
   };
   const ready = status === "ready";
@@ -668,7 +671,7 @@ export function RigEditor({
                     </div>
                   </div>
                 ) : null}
-                {["vehicle", "aircraft", "humanoid", "quadruped", "building"].includes(category) ? (
+                {!["plant", "fluid", "prop"].includes(category) ? (
                   <label className="flex cursor-pointer items-center justify-between gap-3 px-3.5 py-2.5 text-sm font-medium">
                     {tr.flip}
                     <Switch checked={options.flip} onCheckedChange={(v) => changeOptions({ ...options, flip: v })} />
@@ -703,10 +706,30 @@ export function RigEditor({
                         </SelectContent>
                       </Select>
                     </div>
-                    <label className="flex cursor-pointer items-center justify-between gap-3 px-3.5 py-2.5 text-sm font-medium">
+                    <div className="flex items-center justify-between gap-3 px-3.5 py-2 text-sm font-medium">
                       {tr.fins}
-                      <Switch checked={options.fins} onCheckedChange={(v) => changeOptions({ ...options, fins: v })} />
-                    </label>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          aria-label="-"
+                          disabled={!options.fins}
+                          onClick={() => changeOptions({ ...options, fins: options.fins - 1 })}
+                        >
+                          <MinusIcon />
+                        </Button>
+                        <span className="w-5 text-center tabular-nums">{options.fins}</span>
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          aria-label="+"
+                          disabled={options.fins >= MAX_FIN_PAIRS}
+                          onClick={() => changeOptions({ ...options, fins: options.fins + 1 })}
+                        >
+                          <PlusIcon />
+                        </Button>
+                      </div>
+                    </div>
                   </>
                 ) : null}
                 {category === "quadruped" || category === "serpent" || category === "fish" ? (
@@ -751,6 +774,12 @@ export function RigEditor({
                       <label className="flex cursor-pointer items-center justify-between gap-3 px-3.5 py-2.5 text-sm font-medium">
                         {tr.sixLegs}
                         <Switch checked={options.sixLegs} onCheckedChange={(v) => changeOptions({ ...options, sixLegs: v })} />
+                      </label>
+                    ) : null}
+                    {category === "quadruped" && !options.bipedal ? (
+                      <label className="flex cursor-pointer items-center justify-between gap-3 px-3.5 py-2.5 text-sm font-medium">
+                        {tr.insect}
+                        <Switch checked={options.insect} onCheckedChange={(v) => changeOptions({ ...options, insect: v })} />
                       </label>
                     ) : null}
                     {category === "quadruped" && options.bipedal ? (
