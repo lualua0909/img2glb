@@ -17,12 +17,22 @@ export const CREDIT_COST = {
   textPrompt: 1, // extra: text -> concept image stage
 } as const;
 
+/** Extra views a model can be given besides its main image (multi-view generation, see worker/multiview.py). */
+export const VIEW_NAMES = ["front", "back", "side", "top"] as const;
+export type ViewName = (typeof VIEW_NAMES)[number];
+/** Shape candidates per multi-view job (the worker keeps the one matching the views best). */
+export const MAX_SHAPE_CANDIDATES = 4;
+
 /** `costs` comes from admin settings; CREDIT_COST is the default. */
 export function generationCost(
-  opts: { mode: "image" | "text"; textured: boolean },
+  opts: { mode: "image" | "text"; textured: boolean; multiview?: { candidates: number; omni: boolean } | null },
   costs: { shape: number; textured: number; textPrompt: number } = CREDIT_COST,
 ) {
-  return (opts.textured ? costs.textured : costs.shape) + (opts.mode === "text" ? costs.textPrompt : 0);
+  // Every extra shape (candidate or Hunyuan3D-Omni) costs one more shape generation.
+  const extraShapes = opts.multiview ? opts.multiview.candidates - 1 + (opts.multiview.omni ? 1 : 0) : 0;
+  return (
+    (opts.textured ? costs.textured : costs.shape) + extraShapes * costs.shape + (opts.mode === "text" ? costs.textPrompt : 0)
+  );
 }
 
 /** Credits per game map (map worker). 0 for now: pricing not decided yet. */

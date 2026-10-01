@@ -1,9 +1,12 @@
 # Build context is the repo root (docker build -f worker/Dockerfile .); only send what the image copies.
 *
 !Hunyuan3D-2.1/
+!Hunyuan3D-Omni/
 !worker/requirements.txt
 !worker/server.py
 !worker/texture_clean.py
+!worker/multiview.py
+!worker/wings.py
 **/__pycache__/
 **/*.so
 Hunyuan3D-2.1/hy3dpaint/custom_rasterizer/build/

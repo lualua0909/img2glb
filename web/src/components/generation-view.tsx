@@ -81,6 +81,20 @@ function stagesOf(gen: GenerationDTO) {
         : ["Generating shape", "Cleaning mesh"]),
       ...(gen.textured ? ["Painting texture"] : []),
     ];
+  const { multiview } = gen;
+  if (multiview) {
+    const n = multiview.candidates;
+    return [
+      "Preparing image",
+      ...(n === 1 ? ["Generating shape"] : Array.from({ length: n }, (_, i) => `Generating shape ${i + 1}/${n}`)),
+      "Cleaning mesh",
+      ...(multiview.omni ? ["Loading Hunyuan3D-Omni", "Generating shape (Omni)"] : []),
+      ...(Object.keys(multiview.viewUrls).length ? ["Matching views"] : []),
+      ...(multiview.wingSheets ? ["Separating wings"] : []),
+      ...(gen.textured ? ["Painting texture"] : []),
+      ...(gen.textured && Object.keys(multiview.viewUrls).length ? ["Projecting views"] : []),
+    ];
+  }
   return STAGES.filter(
     (s) =>
       (s !== "Creating concept image" || gen.mode === "text") &&
@@ -98,6 +112,8 @@ export function formatBytes(n: number | null) {
 function stageLabel(message: string, t: Dictionary) {
   const queued = /^In queue \(position (\d+)\)$/.exec(message);
   if (queued) return t.gen.queuePosition(Number(queued[1]));
+  const candidate = /^Generating shape (\d+)\/(\d+)$/.exec(message);
+  if (candidate) return t.gen.shapeCandidate(Number(candidate[1]), Number(candidate[2]));
   return t.gen.stages[message] ?? message;
 }
 
@@ -126,6 +142,14 @@ function Progress({ gen, elapsed }: { gen: GenerationDTO; elapsed: number }) {
           <p className="font-semibold">
             {gen.refine ? t.gen.refining : t.gen.working}
           </p>
+          {gen.multiview ? (
+            <div className="mt-1 flex gap-1" aria-label={t.gen.views}>
+              {Object.entries(gen.multiview.viewUrls).map(([name, url]) => (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img key={name} src={url} alt="" className="size-6 rounded-md bg-muted object-contain" />
+              ))}
+            </div>
+          ) : null}
           <p className="text-xs text-muted-foreground tabular-nums">
             {gen.refine ? t.gen.elapsedRefine(elapsed) : t.gen.elapsed(elapsed)}
           </p>

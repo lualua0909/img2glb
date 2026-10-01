@@ -7,14 +7,18 @@ a single-GPU FIFO job queue, image-URL input, text-to-3D via HunyuanDiT, a bound
 cleanup, a job status API consumed by the Next.js app (web/src/lib/providers/hunyuan.ts), an admin API
 (model downloads, model selection with hot reload) used by the web admin CMS (/app/admin/models), and
 refinement jobs: the reference image is edited with an instruction (InstructPix2Pix, Vietnamese prompts are
-translated to English first), then the model is rebuilt from it, or only re-textured when mesh_url is given.
+translated to English first), then the model is rebuilt from it, or only re-textured when mesh_url is given, and
+multi-view jobs (multiview.py): extra front/back/side/top views pick the best of several shapes (Hunyuan3D-2.1 seeds
+and, with `omni`, Hunyuan3D-Omni conditioned on the views' visual hull), fix its proportions and project their colors
+onto the texture.
 
 API (all routes except /healthz require `Authorization: Bearer $WORKER_TOKEN`):
   POST   /v1/preprocess         raw image bytes -> image/png (denoised, background removed, centered)
   POST   /v1/texture/clean      {level, base_color, metallic_roughness?, uv, indices} -> cleaned PNG maps (texture_clean.py)
   POST   /v1/jobs               {image_url | prompt, texture, num_inference_steps, guidance_scale,
                                  octree_resolution, face_count, texture_size, flat_shading, seed,
-                                 edit_prompt, edit_image_guidance, mesh_url}   (edit_*/mesh_url: refinement)
+                                 edit_prompt, edit_image_guidance, mesh_url,   (edit_*/mesh_url: refinement)
+                                 views: {front|back|side|top: url}, shape_candidates, omni, paint_all_views}
   GET    /v1/jobs/{id}          -> {id, status: queued|running|completed|failed|cancelled, stage, queue_position, error, has_concept_image}
   POST   /v1/jobs/{id}/cancel   queued: dropped; running: stops at the next diffusion step or stage
   GET    /v1/jobs/{id}/model    -> model/gltf-binary
@@ -83,6 +87,8 @@ from huggingface_hub.constants import HF_HUB_CACHE  # noqa: E402
 from PIL import Image  # noqa: E402
 from pydantic import BaseModel, Field, model_validator  # noqa: E402
 
+import multiview as mv  # noqa: E402
+import wings  # noqa: E402
 from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline  # noqa: E402
 from hy3dshape.postprocessors import DegenerateFaceRemover, FaceReducer, FloaterRemover  # noqa: E402
 
@@ -130,6 +136,12 @@ SKINTOKENS_VRAM = 14 * 1024**3  # inference needs ~14 GB
 AUTORIG_TIMEOUT = int(os.environ.get("AUTORIG_TIMEOUT", "1800"))
 # HunyuanDiT full (non-distilled) model needs ~50 steps; upstream's wrapper hardcodes 25 for the distilled one.
 T2I_STEPS = int(os.environ.get("T2I_STEPS", "50"))
+# Hunyuan3D-Omni (shape conditioned on a voxel grid, here the visual hull of a multi-view job): vendored code, weights
+# downloaded on first use (EMA DiT, ~13.5 GB), loaded on first use.
+OMNI_REPO = os.path.abspath(
+    os.environ.get("OMNI_REPO", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Hunyuan3D-Omni"))
+)
+OMNI_MODEL = os.environ.get("OMNI_MODEL", "tencent/Hunyuan3D-Omni")
 # Only fetch input images from these hosts (localhost for the local web app). Empty = any public host.
 ALLOWED_IMAGE_HOSTS = {h.strip() for h in os.environ.get("ALLOWED_IMAGE_HOSTS", "").split(",") if h.strip()}
 
@@ -264,11 +276,24 @@ class PaintPBR:
         conf.custom_pipeline = os.path.join(HY21_REPO, "hy3dpaint", "hunyuanpaintpbr")
         self.pipe = Hunyuan3DPaintPipeline(conf)
 
-    def __call__(self, mesh: trimesh.Trimesh, image: Image.Image) -> trimesh.Trimesh:
+    def __call__(self, mesh: trimesh.Trimesh, image: Image.Image, refs: Optional[list[Image.Image]] = None,
+                 views: Optional[list["mv.View"]] = None, fit: Optional["mv.Fit"] = None,
+                 on_project=None) -> tuple[trimesh.Trimesh, Optional["mv.Fit"]]:
+        """`refs`: more reference images for the multiview diffusion (after `image`). `views` + `fit`: project the
+        views' own colors onto the baked albedo (multiview.py); `on_project` is called before that stage.
+        Returns the textured mesh and `fit` with its heading resolved by color (see mv.resolve_heading)."""
         with tempfile.TemporaryDirectory() as d:
             mesh.export(os.path.join(d, "white.obj"))
             obj = os.path.join(d, "textured.obj")
-            self.pipe(mesh_path=os.path.join(d, "white.obj"), image_path=image, output_mesh_path=obj, use_remesh=False, save_glb=False)
+            self.pipe(mesh_path=os.path.join(d, "white.obj"), image_path=[image, *(refs or [])], output_mesh_path=obj,
+                      use_remesh=False, save_glb=False)
+            if views and fit:
+                if on_project:
+                    on_project()
+                render = self.pipe.render
+                fit, projections = mv.resolve_heading(render, views, fit)
+                if mv.blend_projections(render, projections):
+                    render.save_mesh(obj, downsample=True)
             out = trimesh.load(obj, force="mesh", process=False)
             albedo = Image.open(os.path.join(d, "textured.jpg")).convert("RGB")
             metallic = Image.open(os.path.join(d, "textured_metallic.jpg")).convert("L")
@@ -279,7 +304,7 @@ class PaintPBR:
                 baseColorTexture=albedo, metallicRoughnessTexture=mr, metallicFactor=1.0, roughnessFactor=1.0
             )
             out.visual = trimesh.visual.TextureVisuals(uv=out.visual.uv, material=material)
-            return out
+            return out, fit
 
 
 class Editor:
@@ -344,11 +369,13 @@ class Runtime:
         self.load_error: Optional[str] = None
         self.gpu_lock = threading.Lock()
         self._editor: Optional[Editor] = None
+        self._omni = None
 
     def unload(self):
         """Free the models (called with gpu_lock held)."""
         self.models = None
         self._editor = None
+        self._omni = None
         gc.collect()
         empty_cache()
         log.info("models unloaded")
@@ -358,6 +385,23 @@ class Runtime:
         if self._editor is None:
             self._editor = Editor()
         return self._editor
+
+    def omni(self):
+        """Hunyuan3D-Omni, loaded on the first multi-view job that asks for it (called with gpu_lock held); downloads
+        the weights the first time."""
+        if self._omni is None:
+            from huggingface_hub import snapshot_download
+
+            if OMNI_REPO not in sys.path:
+                sys.path.insert(0, OMNI_REPO)
+            from hy3domni.pipelines import Hunyuan3DOmniSiTFlowMatchingPipeline
+
+            log.info("loading %s", OMNI_MODEL)
+            path = snapshot_download(OMNI_MODEL, allow_patterns=[
+                "*.json", "*.txt", "model/pytorch_model_ema.bin", "vae/*", "cond_encoder/*"])
+            self._omni = Hunyuan3DOmniSiTFlowMatchingPipeline.from_pretrained(
+                path, variant="ema", device=DEVICE, dtype=torch.float16)
+        return self._omni
 
     def load(self, cfg: dict):
         with self.gpu_lock:
@@ -489,13 +533,27 @@ class JobIn(BaseModel):
     mesh_url: Optional[str] = None
     # Auto-rig this finished model (GLB) with SkinTokens instead of generating one (CUDA hosts only).
     rig_url: Optional[str] = None
+    # Multi-view: more views of the object in image_url (orthographic, any mirror; top = seen from above).
+    views: Optional[dict[Literal["front", "back", "side", "top"], str]] = None
+    # Shapes generated (seeds seed, seed + 1, ...); the one matching the views' silhouettes best is kept.
+    shape_candidates: int = Field(default=1, ge=1, le=4)
+    # Also generate a shape with Hunyuan3D-Omni conditioned on the views' visual hull (needs views).
+    omni: bool = False
+    # Give the views to the texture model as extra reference images (besides projecting their colors).
+    paint_all_views: bool = False
+    # Replace membrane wings (thin sheets off the midline) by double-sided sheets textured from the views (wings.py).
+    wing_sheets: bool = False
 
     @model_validator(mode="after")
     def one_input(self):
         if self.rig_url:
-            if self.image_url or self.prompt or self.edit_prompt or self.mesh_url:
+            if self.image_url or self.prompt or self.edit_prompt or self.mesh_url or self.views or self.wing_sheets:
                 raise ValueError("rig_url cannot be combined with other inputs")
             return self
+        if self.views and (not self.image_url or self.edit_prompt):
+            raise ValueError("views need image_url and cannot be combined with edit_prompt")
+        if (self.omni or self.paint_all_views) and not self.views:
+            raise ValueError("omni and paint_all_views need views")
         if bool(self.image_url) == bool(self.prompt):
             raise ValueError("provide exactly one of image_url or prompt")
         if (self.edit_prompt or self.mesh_url) and not self.image_url:
@@ -542,7 +600,7 @@ class Job:
             self.check_cancel()
         now = time.time()
         if self.stage in self.expected:
-            key = stage_key(self.params, self.stage)
+            key = stage_key(self.params, base_stage(self.stage))
             stage_secs[key] = 0.5 * self.expected[self.stage] + 0.5 * (now - self.stage_started)
         self.stage, self.stage_started = stage, now
 
@@ -567,31 +625,53 @@ stage_secs: dict[str, float] = {
     "Editing image": 60,
     "Loading model": 5,
     "Generating shape": 580,
+    "Loading Hunyuan3D-Omni": 90,
+    "Generating shape (Omni)": 600,
     "Cleaning mesh": 15,
+    "Matching views": 20,
+    "Separating wings": 10,
     "Painting texture": 500,
+    "Projecting views": 90,
     "Rigging": 120,
 }
+SHAPE_STAGES = ("Generating shape", "Generating shape (Omni)")
 
 
 def stage_key(p: JobIn, stage: str) -> str:
-    return f"{stage} {p.num_inference_steps}/{p.octree_resolution}" if stage == "Generating shape" else stage
+    return f"{stage} {p.num_inference_steps}/{p.octree_resolution}" if stage in SHAPE_STAGES else stage
+
+
+def shape_stage(i: int, n: int) -> str:
+    """Stage name of the i-th of n Hunyuan3D-2.1 shapes ("Generating shape", "Generating shape 2/3", ...)."""
+    return "Generating shape" if n == 1 else f"Generating shape {i + 1}/{n}"
+
+
+def base_stage(stage: str) -> str:
+    """The stage a timing belongs to: every "Generating shape i/n" counts as "Generating shape"."""
+    return "Generating shape" if stage.startswith("Generating shape ") and stage[17:18].isdigit() else stage
 
 
 def expected_stages(p: JobIn) -> dict[str, float]:
     """The stages `run` / `run_autorig` go through for these params, in order, with their expected seconds."""
+    shapes = [shape_stage(i, p.shape_candidates) for i in range(p.shape_candidates)]
     if p.rig_url:
         stages = ["Loading model", "Rigging"]
     else:
         stages = [
             "Creating concept image" if p.prompt else "Preparing image",
             *(["Editing image"] if p.edit_prompt else []),
-            *(["Loading model"] if p.mesh_url else ["Generating shape", "Cleaning mesh"]),
+            *(["Loading model"] if p.mesh_url else [*shapes, "Cleaning mesh"]),
+            *(["Loading Hunyuan3D-Omni", "Generating shape (Omni)"] if p.omni and not p.mesh_url else []),
+            *(["Matching views"] if p.views else []),
+            *(["Separating wings"] if p.wing_sheets else []),
             *(["Painting texture"] if p.texture else []),
+            *(["Projecting views"] if p.views and p.texture else []),
         ]
     # A shape setting not seen yet: scale the base estimate (steps linear, octree decoding roughly by area).
     scale = p.num_inference_steps / 30 * (p.octree_resolution / 256) ** 2
+
     return {
-        s: stage_secs.get(stage_key(p, s)) or stage_secs[s] * (scale if s == "Generating shape" else 1)
+        s: stage_secs.get(stage_key(p, base_stage(s))) or stage_secs[base_stage(s)] * (scale if base_stage(s) in SHAPE_STAGES else 1)
         for s in stages
     }
 
@@ -691,44 +771,148 @@ def run(models: Models, job: Job, sw: Stopwatch):
         image.save(os.path.join(job.dir, "concept.png"))
         job.has_concept_image = True
 
+    # Multi-view: the main image plus the extra views, cut out the same way.
+    views: list[mv.View] = []
+    if p.views:
+        views.append(mv.View("main", mv.cut_out(image)))
+        for name in mv.VIEW_NAMES:
+            if name in p.views:
+                v = fetch_image(p.views[name])
+                views.append(mv.View(name, mv.cut_out(v if v.mode == "RGBA" else models.rembg(v.convert("RGB")))))
+    matcher = mv.Matcher(views or [mv.View("main", mv.cut_out(image))])
+
     if p.mesh_url:
         job.enter("Loading model")
         mesh = fetch_mesh(p.mesh_url)
     else:
-        job.enter("Generating shape")
         t = time.time()
-        mesh = models.shape(
-            image=image,
-            num_inference_steps=p.num_inference_steps,
-            guidance_scale=p.guidance_scale or DEFAULT_GUIDANCE,
-            generator=torch.Generator(DEVICE).manual_seed(p.seed),
-            octree_resolution=p.octree_resolution,
-            num_chunks=200000,
-            mc_algo="mc",
-            callback=job.check_cancel,
-            callback_steps=1,
-        )[0]
-
+        mesh = generate_shape(models, job, image, matcher)
         job.enter("Cleaning mesh")
-        mesh = models.floater(mesh)
-        mesh = models.degenerate(mesh)
-        mesh = models.reducer(mesh, max_facenum=p.face_count)
-        fix_upside_down(mesh, image)
+        mesh = clean_mesh(models, mesh, p, image)
         sw.lap("shape", t)
+        if p.omni:
+            t = time.time()
+            mesh = omni_shape(models, job, image, views, matcher, mesh)
+            sw.lap("omni", t)
+
+    fit = None
+    if views:
+        job.enter("Matching views")
+        fit = matcher.fit(mesh)
+        if not p.mesh_url:  # a kept mesh (refinement) keeps its proportions
+            mv.apply_scale(mesh, fit)
+        job.timings["view_iou"] = round(fit.score, 3)
+        job.timings.update({f"view_iou_{k}": round(v, 3) for k, v in fit.ious.items()})
+
+    sheets = []
+    if p.wing_sheets:
+        job.enter("Separating wings")
+        mesh, sheets = wings.membrane_sheets(mesh, matcher.views, fit or matcher.fit(mesh))
+        job.timings["wing_sheets"] = len(sheets)
 
     if p.texture:
         if models.tex is None:
             raise RuntimeError("texture generation disabled on this worker")
         job.enter("Painting texture")
         t = time.time()
-        mesh = models.tex(mesh, image)
+        refs = [mv.square(v.image) for v in views if v.name != "main"] if p.paint_all_views else None
+        mesh, fit = models.tex(mesh, image, refs, views, fit, on_project=lambda: job.enter("Projecting views"))
         sw.lap("texture", t)
         if p.texture_size:
             cap_textures(mesh, p.texture_size)
 
     if p.flat_shading:
         mesh.unmerge_vertices()
-    mesh.export(os.path.join(job.dir, "model.glb"), include_normals=p.flat_shading or None)
+    out = trimesh.Scene([mesh, *sheets]) if sheets else mesh
+    out.export(os.path.join(job.dir, "model.glb"), include_normals=p.flat_shading or None)
+
+
+def generate_shape(models: Models, job: Job, image: Image.Image, matcher: mv.Matcher) -> trimesh.Trimesh:
+    """Hunyuan3D-2.1 shape. With several candidates (seeds seed, seed + 1, ...), each is decoded coarsely, matched
+    against the views' silhouettes (only the main image's when there are no extra views) and the best one is decoded
+    at full resolution."""
+    p = job.params
+    n = p.shape_candidates
+    best = None  # (score, latents)
+    for i in range(n):
+        job.enter(shape_stage(i, n))
+        latents = models.shape(
+            image=image,
+            num_inference_steps=p.num_inference_steps,
+            guidance_scale=p.guidance_scale or DEFAULT_GUIDANCE,
+            generator=torch.Generator(DEVICE).manual_seed(p.seed + i),
+            output_type="latent",
+            callback=job.check_cancel,
+            callback_steps=1,
+        )
+        if n == 1:
+            best = (0.0, latents)
+            break
+        coarse = models.shape._export(latents, octree_resolution=128, num_chunks=200000, mc_algo="mc", enable_pbar=False)[0]
+        if coarse is None:
+            log.info("shape candidate %d (seed %d): empty", i + 1, p.seed + i)
+            continue
+        fix_upside_down(coarse, image)
+        score = matcher.fit(coarse).score
+        log.info("shape candidate %d (seed %d): silhouette IoU %.3f", i + 1, p.seed + i, score)
+        job.timings[f"candidate_{i + 1}_iou"] = round(score, 3)
+        if best is None or score > best[0]:
+            best = (score, latents)
+    if best is None:
+        raise RuntimeError("no shape candidate produced a surface")
+    mesh = models.shape._export(best[1], octree_resolution=p.octree_resolution, num_chunks=200000, mc_algo="mc")[0]
+    if mesh is None:
+        raise RuntimeError("the shape model produced no surface")
+    return mesh
+
+
+def clean_mesh(models: Models, mesh: trimesh.Trimesh, p: JobIn, image: Image.Image) -> trimesh.Trimesh:
+    mesh = models.floater(mesh)
+    mesh = models.degenerate(mesh)
+    mesh = models.reducer(mesh, max_facenum=p.face_count)
+    fix_upside_down(mesh, image)
+    return mesh
+
+
+def omni_shape(models: Models, job: Job, image: Image.Image, views: list[mv.View], matcher: mv.Matcher,
+               mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Hunyuan3D-Omni shape conditioned on the visual hull of the views (placed with `mesh`, the Hunyuan3D-2.1 shape,
+    for heading and proportions). Returns whichever of the two matches the views' silhouettes better."""
+    p = job.params
+    fit = matcher.fit(mesh)
+    occ, pts = mv.visual_hull(mv.apply_scale(mesh.copy(), fit), views, fit)
+    log.info("visual hull: %.1f%% of the grid", 100 * occ.mean())
+    points, _, _ = mv.omni_normalize(mv.hull_points(occ, pts))
+    np.save(os.path.join(job.dir, "hull_points.npy"), points.astype(np.float32))
+    if rt._omni is None:
+        job.enter("Loading Hunyuan3D-Omni")
+    omni = rt.omni()
+    job.enter("Generating shape (Omni)")
+    hook = omni.model.register_forward_pre_hook(lambda *_: job.check_cancel())  # cancel between steps
+    try:
+        out = omni(
+            image=[image],
+            voxel=torch.from_numpy(points).to(DEVICE, torch.float16)[None],
+            num_inference_steps=p.num_inference_steps,
+            guidance_scale=4.5,  # upstream default for Omni
+            generator=torch.Generator(DEVICE).manual_seed(p.seed),
+            octree_resolution=p.octree_resolution,
+            mc_level=0.0,
+            num_chunks=200000,
+        )
+    finally:
+        hook.remove()
+    omesh = out["shapes"][0][0]
+    if omesh is None:
+        log.warning("Hunyuan3D-Omni produced no surface: keeping the Hunyuan3D-2.1 shape")
+        return mesh
+    omesh = clean_mesh(models, omesh, p, image)
+    omesh.export(os.path.join(job.dir, "omni.glb"))
+    mesh.export(os.path.join(job.dir, "hy21.glb"))
+    s21, somni = fit.score, matcher.fit(omesh).score
+    job.timings["hy21_iou"], job.timings["omni_iou"] = round(s21, 3), round(somni, 3)
+    log.info("silhouette IoU: Hunyuan3D-2.1 %.3f, Hunyuan3D-Omni %.3f", s21, somni)
+    return omesh if somni >= s21 else mesh
 
 
 def autorig_available() -> bool:

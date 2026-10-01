@@ -111,7 +111,7 @@ class multiviewDiffusionNet:
         }
 
         mvd_image = self.pipeline(
-            input_images[0:1],
+            input_images,  # every reference image (reference attention takes N refs); upstream passed only the first
             num_inference_steps=infer_steps_dict[self.pipeline.scheduler.__class__.__name__],
             prompt=prompt,
             sync_condition=sync_condition,

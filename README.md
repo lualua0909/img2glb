@@ -12,6 +12,7 @@ preview and GLB · STL · OBJ · USDZ export.
 | `worker/` | GPU inference backend wrapping upstream Hunyuan3D — see [`worker/README.md`](worker/README.md) |
 | `worker/map/` | Game map image → layered 3D scene (terrain, water, instanced props) — see [`worker/map/README.md`](worker/map/README.md) |
 | `Hunyuan3D-2.1/` | Vendored upstream (commit `82920d6`) with `worker/mac/hunyuan3d-2.1-mps.patch` applied |
+| `Hunyuan3D-Omni/` | Vendored upstream (commit `4d47c0c`, package renamed `hy3domni`) with `worker/hunyuan3d-omni.patch` applied: shape from the visual hull of multi-view jobs |
 | `data/` | Runtime only (ignored): Postgres files, weights, inputs/outputs, worker jobs |
 | `docs/adr/` | Architecture decisions (engine choice, Hunyuan3D-2.1 only) |
 | `start.sh` / `shutdown.sh` | Start/stop everything locally |
@@ -53,10 +54,10 @@ cd ..
 - [`worker/README.md`](worker/README.md) — Docker/CUDA run, env vars, refinement, auto-rig
 - [`worker/mac/README.md`](worker/mac/README.md) — Apple Silicon specifics and measured timings
 - [`worker/map/README.md`](worker/map/README.md) — game map pipeline: stages, models, timings, limits
-- [`docs/adr/`](docs/adr/) — why Hunyuan3D only, quality variants, why only Hunyuan3D-2.1
+- [`docs/adr/`](docs/adr/) — why Hunyuan3D only, quality variants, why only Hunyuan3D-2.1, multi-view references
 
 ## License notes
 
-Upstream models are under the Tencent Hunyuan 3D 2.1 Community License (see
-`web/public/HUNYUAN3D_LICENSE.txt`): geo-block for EU/UK/KR applies, >1M MAU needs a
+Upstream models are under the Tencent Hunyuan 3D 2.1 and 3D Omni Community Licenses (see
+`web/public/HUNYUAN3D_LICENSE.txt`, `web/public/HUNYUAN3D_OMNI_LICENSE.txt`): geo-block for EU/UK/KR applies, >1M MAU needs a
 separate license from Tencent. App code here does not relicense upstream.

@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import type { ViewName } from "@/lib/config";
 import {
   type AnyPgColumn,
   boolean,
@@ -44,6 +45,20 @@ export type RefineOptions = {
 
 /** A version rigged and animated in the browser (rig editor). */
 export type GenerationStats = Record<string, number>;
+
+/** Extra views of the object in the input image (see worker/multiview.py). */
+export type MultiViewOptions = {
+  /** Storage key of each uploaded view. */
+  keys: Partial<Record<ViewName, string>>;
+  /** Hunyuan3D-2.1 shapes generated; the one matching the views best is kept. */
+  candidates: number;
+  /** Also generate a Hunyuan3D-Omni shape conditioned on the views' visual hull. */
+  omni: boolean;
+  /** Give the views to the texture model as extra references. */
+  paintAllViews: boolean;
+  /** Replace membrane wings by thin double-sided sheets textured from the image(s). */
+  wingSheets?: boolean;
+};
 
 export type RigInfo = {
   category: string;
@@ -105,6 +120,7 @@ export const generation = pgTable(
     rig: jsonb("rig").$type<RigInfo>(),
     compress: jsonb("compress").$type<CompressInfo>(),
     textureClean: jsonb("texture_clean").$type<TextureCleanInfo>(),
+    multiview: jsonb("multiview").$type<MultiViewOptions>(),
     /** Worker timings (seconds per stage) and peak memory (GB), reported when the job finishes. */
     stats: jsonb("stats").$type<GenerationStats>(),
     /** Short lease so only one request advances a job at a time. */

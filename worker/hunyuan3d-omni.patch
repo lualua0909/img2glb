@@ -1,0 +1,47 @@
+Local changes to the vendored Hunyuan3D-Omni (upstream https://github.com/Tencent-Hunyuan/Hunyuan3D-Omni,
+commit 4d47c0c). Only License.txt, Notice.txt, README.md, requirements.txt and the `hy3dshape` package were vendored,
+the package renamed to `hy3domni` (every `hy3dshape` import rewritten) so it can sit next to Hunyuan3D-2.1's own
+`hy3dshape` in the worker. This patch is relative to that renamed copy.
+
+diff --git a/hy3domni/models/utils/misc.py b/hy3domni/models/utils/misc.py
+index e6b0221..01efa1d 100755
+--- a/hy3domni/models/utils/misc.py
++++ b/hy3domni/models/utils/misc.py
+@@ -24,6 +24,9 @@ def get_config_from_file(config_file: str) -> Union[DictConfig, ListConfig]:
+ 
+ 
+ def get_obj_from_str(string, reload=False):
++    # Vendored as `hy3domni` (next to Hunyuan3D-2.1's own `hy3dshape`): the weights' configs still name `hy3dshape`.
++    if string.startswith("hy3dshape."):
++        string = "hy3domni." + string[len("hy3dshape."):]
+     module, cls = string.rsplit(".", 1)
+     if reload:
+         module_imp = importlib.import_module(module)
+diff --git a/hy3domni/pipelines/pipeline_generation_sit_omni.py b/hy3domni/pipelines/pipeline_generation_sit_omni.py
+index 80bbba2..61662fa 100755
+--- a/hy3domni/pipelines/pipeline_generation_sit_omni.py
++++ b/hy3domni/pipelines/pipeline_generation_sit_omni.py
+@@ -87,7 +87,13 @@ class Hunyuan3DOmniSiTFlowMatchingPipeline:
+                 print(f'Loaded {submodule_name}')
+                 continue
+ 
+-            submodule = instantiate_from_config(config)
++            # Allocate parameters in the target dtype (the 3.3B DiT is 13 GB in fp32, 6.6 GB in fp16).
++            default_dtype = torch.get_default_dtype()
++            torch.set_default_dtype(dtype)
++            try:
++                submodule = instantiate_from_config(config)
++            finally:
++                torch.set_default_dtype(default_dtype)
+             if isinstance(submodule, nn.Module):
+                 ckpt_path = os.path.join(model_path, submodule_name, ckpt_name)
+                 if variant == 'ema':
+@@ -98,7 +104,7 @@ class Hunyuan3DOmniSiTFlowMatchingPipeline:
+                         ckpt_path = os.path.join(model_path, submodule_name, ckpt_name)
+                 if os.path.exists(ckpt_path):
+                     missing, unexpected = submodule.load_state_dict(
+-                        torch.load(ckpt_path, map_location='cpu'), strict=False)
++                        torch.load(ckpt_path, map_location='cpu', mmap=True, weights_only=True), strict=False)
+                     print(f"Loaded {ckpt_path} with {len(missing)} missing and {len(unexpected)} unexpected keys")
+                     if len(missing) > 0:
+                         print(f"Missing Keys: {Counter([s.split('.')[0] for s in missing])}")

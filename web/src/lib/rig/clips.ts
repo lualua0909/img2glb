@@ -401,7 +401,16 @@ function aim(P: Poser, b: string, target: Vector3, amount = 1) {
   if (len > 1e-6) P.rot(b, axis.divideScalar(len), amount * Math.atan2(len, cur.dot(t)));
 }
 
-function bake(r: Rig, name: string, duration: number, posed: (t: number, P: Poser) => void, mirror = false, fps = 30): AnimationClip {
+/** `after` poses on top of the soft chains' follow-through: a shiver too fast for their springs to pass on. */
+function bake(
+  r: Rig,
+  name: string,
+  duration: number,
+  posed: (t: number, P: Poser) => void,
+  mirror = false,
+  fps = 30,
+  after?: (t: number, P: Poser) => void,
+): AnimationClip {
   const pose = wafted(r, duration, posed, loopsOf(r, duration, posed));
   const frames = Math.max(2, Math.round(duration * fps) + 1);
   const times = new Float32Array(frames);
@@ -423,6 +432,7 @@ function bake(r: Rig, name: string, duration: number, posed: (t: number, P: Pose
     P.reset();
     pose(t, P);
     if (soft) chains.forEach((c, ci) => applyChain(P, c.bones, soft[f][ci]));
+    after?.(t, P);
     for (let i = 0; i < n; i++) {
       P.q[i].toArray(qs[i], f * 4);
       P.p[i].toArray(ps[i], f * 3);
@@ -458,7 +468,7 @@ type Kit = {
   fwd(k: number): Vector3;
   /**
    * `mirror`: the pose is written for the other side (see `Poser.mirror`). `fps`: keyframes per second (30 by default;
-   * more for motions too fast for 30, an insect's wingbeat).
+   * more for motions too fast for 30, an insect's wingbeat). `after`: posed last, over the soft chains (see `bake`).
    */
   clip(
     movement: Movement,
@@ -467,6 +477,7 @@ type Kit = {
     pose: (t: number, P: Poser, phase: number) => void,
     mirror?: boolean,
     fps?: number,
+    after?: (t: number, P: Poser) => void,
   ): RigClip;
   /** Names of the bones matching `re`, in rig order. */
   bones(re: RegExp): string[];
@@ -486,9 +497,9 @@ function kit(r: Rig): Kit {
     yaw: (P, b, a) => P.rot(b, U, a),
     up: (k) => U.clone().multiplyScalar(k),
     fwd: (k) => F.clone().multiplyScalar(k),
-    clip: (movement, name, duration, pose, mirror, fps) => ({
+    clip: (movement, name, duration, pose, mirror, fps, after) => ({
       movement,
-      clip: bake(r, name, duration, (t, P) => pose(t, P, (TAU * t) / duration), mirror, fps),
+      clip: bake(r, name, duration, (t, P) => pose(t, P, (TAU * t) / duration), mirror, fps, after),
     }),
     bones: (re) => r.names.filter((n) => re.test(n)),
   };
@@ -671,6 +682,148 @@ const tap = (k: Kit) =>
     const s = Math.exp(-5 * t) * Math.sin(TAU * 2.5 * t);
     P.scale("Root", 1 + 0.12 * s, 1 - 0.16 * s, 1 + 0.12 * s);
   });
+
+// ---------------------------------------------------------------- aerial skills (dragons, winged beasts, sea beasts)
+
+/**
+ * Carries the whole body through the air: banks, pitches (positive = nose down) and heads (positive = left) the Root
+ * about the body's middle rather than its feet, and moves that middle by `offset`. Pose every body part first: rotations
+ * are about world axes, and the Root's turn carries them along.
+ */
+function carry(k: Kit, P: Poser, offset: Vector3, pitch: number, heading: number, bank: number) {
+  const mid = k.up(0.5 * k.H);
+  const q = new Quaternion();
+  for (const [axis, a] of [
+    [k.F, bank],
+    [k.L, pitch],
+    [k.U, heading],
+  ] as const) {
+    P.rot("Root", axis, a);
+    q.premultiply(new Quaternion().setFromAxisAngle(axis, a));
+  }
+  P.move("Root", offset.clone().add(mid).sub(mid.applyQuaternion(q)));
+}
+
+/** A membrane that quivers in the rush of air: its links (base first), side (1 = left) and phase. */
+type Quiver = { bones: string[]; side: number; phase: number };
+/**
+ * Every membrane but the main wings, which are held spread: the wing pairs behind the first, every fin (a ray's first
+ * pair is its wings) and every crest section (a dorsal fin, a frill).
+ */
+function quiversOf(k: Kit): Quiver[] {
+  const out: Quiver[] = [];
+  const add = (bones: string[], phase: number) =>
+    (["L", "R"] as const).forEach((s, i) => {
+      const chain = bones.map((b) => b + s).filter((b) => k.r.index.has(b));
+      if (chain.length) out.push({ bones: chain, side: i ? -1 : 1, phase });
+    });
+  wingPairs(k).slice(1).forEach(({ wing }, i) => add(wing, 1.3 * i));
+  const ray = k.r.plan.category === "fish" && k.r.plan.swim === "ray";
+  for (let p = ray ? 2 : 1; p <= MAX_FIN_PAIRS; p++) add([1, 2, 3].map((j) => finBone(p, j)), 2.1 * p);
+  for (const name of k.r.names) {
+    const c = /^Crest(\d+)_1$/.exec(name);
+    if (c) out.push({ bones: [1, 2, 3].map((j) => `Crest${c[1]}_${j}`), side: 1, phase: 0.8 * +c[1] });
+  }
+  return out;
+}
+/**
+ * Quivering (rung): every membrane flutters fast across its face, about the body's forward axis (a wing or fin beats
+ * up and down, a crest side to side), the wave running out to the tip. Posed last, after the Root has turned (see
+ * `bake`'s `after`), in the body's current axes; `amp` per link, radians.
+ */
+function quiver(k: Kit, P: Poser, quivers: Quiver[], t: number, amp: number) {
+  const body = P.q[k.r.index.get("Root")!];
+  const F = k.F.clone().applyQuaternion(body);
+  const U = k.U.clone().applyQuaternion(body);
+  for (const { bones, side, phase } of quivers)
+    bones.forEach((b, i) => {
+      const d = P.dir(b);
+      const axis = F.clone().addScaledVector(d, -d.dot(F));
+      if (axis.lengthSq() < 0.04) axis.copy(U).addScaledVector(d, -d.dot(U));
+      P.rot(b, axis.normalize(), side * amp * Math.sin(TAU * 12 * t + phase - 0.9 * i));
+    });
+}
+
+/**
+ * How far the body reaches ahead of the Root: the nose a dive lands on (the head, unless a leg reaches farther). Wings
+ * and feelers are posed out of the way in flight.
+ */
+const noseOf = (k: Kit) => {
+  const root = k.r.plan.bones[k.r.index.get("Root")!].head;
+  const body = k.r.plan.bones.filter((b) => !/^(Wing|Feeler)/.test(b.name));
+  return Math.max(0, ...body.flatMap((b) => [b.head, b.tail]).map((v) => v.clone().sub(root).dot(k.F)));
+};
+/**
+ * Height to carry the body's middle (see `carry`) so that, pitched `p` nose down, its nose just touches the ground it
+ * stood on.
+ */
+const groundAt = (k: Kit, nose: number, p: number) => nose * Math.sin(p) + 0.5 * k.H * (Math.cos(p) - 1);
+
+/**
+ * Dive bomb (lượn lên cao rồi lao thẳng xuống): from cruising at `h0`, soar up high nose first, wing over at the top
+ * and plunge straight down onto the ground ahead, slam level on impact, then climb back to where it started. Wings
+ * stay spread wide all the way and every other membrane quivers, hardest in the plunge. `body` poses the body (wings,
+ * legs, tail, jaw) given how far into the plunge it is (0 -> 1); the Root carries it. Keyed at 60 fps for the quiver.
+ */
+function diveBomb(k: Kit, h0: number, body: (t: number, P: Poser, plunge: number) => void): RigClip {
+  const S = Math.max(k.H, k.len);
+  const top = h0 + 1.3 * S;
+  const nose = noseOf(k);
+  const quivers = quiversOf(k);
+  const plungeOf = (t: number) => keys(t, [[1.1, 0], [1.4, 1], [1.9, 1], [2.3, 0]]);
+  return k.clip(
+    "13",
+    "Attack_DiveBomb",
+    3,
+    (t, P) => {
+      const pitch = keys(t, [[0, 0], [0.4, -0.7], [1.1, -0.7], [1.4, 1.4], [1.75, 1.4], [2, 0.35], [2.6, 0]]);
+      // Falling faster and faster from the top, then held on the ground as the body slams flat, then back up.
+      const fall = Math.min(1, Math.max(0, (t - 1.4) / 0.35)) ** 2;
+      const y =
+        t < 1.4
+          ? h0 + (top - h0) * keys(t, [[0, 0], [1.2, 1]])
+          : t < 1.75
+            ? top + (groundAt(k, nose, pitch) - top) * fall
+            : groundAt(k, nose, pitch) + h0 * keys(t, [[2, 0], [2.9, 1]]);
+      const ahead = keys(t, [[0, 0], [1.1, 0.7], [1.4, 1], [2, 1], [3, 0]]);
+      body(t, P, plungeOf(t));
+      carry(k, P, k.up(y).add(k.fwd(0.8 * S * ahead)), pitch, 0, 0);
+    },
+    false,
+    60,
+    (t, P) => quiver(k, P, quivers, t, 0.08 + 0.1 * plungeOf(t)),
+  );
+}
+
+/**
+ * Circling pass (lượn vòng quanh mục tiêu): the target is `R` ahead. Rise and turn to the left, fly one big circle
+ * around the target banking into the turn, then turn back to face it where it started. Wings spread wide, every
+ * other membrane quivering. `body` poses the body given how far into the bank it is (0 -> 1); the Root carries it.
+ */
+function circlePass(k: Kit, h0: number, body: (t: number, P: Poser, bank: number) => void): RigClip {
+  const S = Math.max(k.H, k.len);
+  const R = 1.2 * S;
+  const quivers = quiversOf(k);
+  return k.clip(
+    "13",
+    "Attack_Circle",
+    5,
+    (t, P) => {
+      const out = keys(t, [[0, 0], [0.7, 1], [4.3, 1], [5, 0]]);
+      const a = TAU * keys(t, [[0.7, 0], [4.3, 1]]);
+      const bank = keys(t, [[0.5, 0], [1.1, 1], [3.9, 1], [4.5, 0]]);
+      body(t, P, bank);
+      // Around the target clockwise from above, heading along the circle: the turn is to the right.
+      const at = k.fwd(R * (1 - Math.cos(a))).addScaledVector(k.L, R * Math.sin(a)).add(k.up(h0 + 0.3 * S * out));
+      carry(k, P, at, 0, (Math.PI / 2) * out - a, -0.5 * bank);
+    },
+    false,
+    60,
+    (t, P) => quiver(k, P, quivers, t, 0.1),
+  );
+}
+/** Radius of the circling pass (see `circlePass`): a body bending along it curves by its inverse. */
+const circleRadius = (k: Kit) => 1.2 * Math.max(k.H, k.len);
 
 // ---------------------------------------------------------------- humanoid
 
@@ -1545,6 +1698,29 @@ function quadruped(k: Kit): RigClip[] {
             }),
             k.clip("07", "Wings_Fold", 1, (t, P) => aimWings(k, P, foldPose(k), keys(t, [[0, 0], [0.5, 1]]))),
             k.clip("07", "Wings_Spread", 1, (t, P) => aimWings(k, P, spreadPose(k), keys(t, [[0, 0], [0.5, 1]]))),
+            // Dive bomb: legs tucked, neck stretched out ahead, wings spread wide; the jaw opens for the impact.
+            diveBomb(k, 0.3 * H, (t, P, plunge) => {
+              neck(P, -0.1 - 0.15 * plunge);
+              pitch(P, "Head", 0.2 * plunge);
+              jaw(P, plunge);
+              tuck(P);
+              aimWings(k, P, spreadPose(k), 1);
+              soar(k, P, TAU * t, 0.03);
+              lash(P, TAU * t, 0.04);
+              pitch(P, "Tail1", 0.15 * plunge);
+            }),
+            // Circling pass: wings spread wide, the head turned in to watch the target, the tail swinging against
+            // the bank.
+            circlePass(k, 0.3 * H, (t, P, bank) => {
+              neck(P, -0.1);
+              turnNeck(P, -0.35 * bank);
+              yaw(P, "Head", -0.2 * bank);
+              tuck(P);
+              aimWings(k, P, spreadPose(k), 1);
+              soar(k, P, (TAU * t) / 1.25, 0.04);
+              lash(P, (TAU * t) / 1.25, 0.04);
+              tail(P, (TAU * t) / 2.5, 0.08);
+            }),
           ]
         : []),
       k.clip("11", "Interact_Eat", 2.4, (t, P) => {
@@ -1798,6 +1974,8 @@ const QUADRUPED_ATTACKS: AttackTable = {
   Attack_TrunkSweep: ["trunk", ["Trunk1", "Trunk2", "Trunk3"], [0.45, 0.8]],
   Attack_TrunkToss: ["trunk", ["Trunk2", "Trunk3"], [0.45, 0.8]],
   Attack_Spin: ["tail", ["Tail2", "Tail3", "Tail4", "Tail5"], [0.2, 0.75]],
+  Attack_DiveBomb: ["head", ["Head", "Jaw", "Horn", "HornL", "HornR"], [1.65, 2]],
+  Attack_Circle: ["wing", /^Wing\d?(Fore|Hand)[LR]$/, [0.7, 4.3]],
 };
 
 // ---------------------------------------------------------------- bird
@@ -1900,6 +2078,24 @@ function bird(k: Kit): RigClip[] {
       ["LegL", "LegR"].forEach((b) => pitch(P, b, 0.9 * dive - 0.9 * strike));
       pitch(P, "Tail", 0.3 * strike);
     }),
+    // Dive bomb: body level, wings spread wide, legs tucked, neck stretched ahead to strike beak first.
+    diveBomb(k, 0.15 * H, (t, P, plunge) => {
+      pitch(P, "Hips", level);
+      spread(P);
+      soar(k, P, TAU * t, 0.03);
+      pitch(P, "Neck", -0.2 * plunge);
+      pitch(P, "Head", 0.2 * plunge);
+      tuckLegs(P);
+    }),
+    // Circling pass: wings spread wide, the head turned in to watch the target.
+    circlePass(k, 0.15 * H, (t, P, bank) => {
+      pitch(P, "Hips", level);
+      spread(P);
+      soar(k, P, (TAU * t) / 1.25, 0.04);
+      yaw(P, "Head", -0.3 * bank);
+      pitch(P, "Tail", 0.05 * Math.sin((TAU * t) / 1.25 - 1));
+      tuckLegs(P);
+    }),
     spinAttack(k, (P, e) => wings(P, Math.PI / 2, 0.6 * e)),
     k.clip("14", "Hit", 0.7, (t, P) => {
       const e = keys(t, [[0, 0], [0.08, 1], [0.25, 0.8], [0.7, 0]]);
@@ -1928,6 +2124,8 @@ const BIRD_ATTACKS: AttackTable = {
   Attack_Pounce: ["talon", ["FootL", "FootR"], [0.5, 0.85]],
   Attack_Dive: ["talon", ["FootL", "FootR"], [0.6, 0.85]],
   Attack_Spin: ["wing", ["WingHandL", "WingHandR"], [0.2, 0.75]],
+  Attack_DiveBomb: ["beak", ["Head"], [1.65, 2]],
+  Attack_Circle: ["wing", /^Wing\d?(Fore|Hand)[LR]$/, [0.7, 4.3]],
 };
 
 // ---------------------------------------------------------------- fish
@@ -1990,6 +2188,14 @@ function fish(k: Kit): RigClip[] {
     );
   /** Opens the jaw (rigs with one): 1 = wide open. */
   const jaw = (P: Poser, open: number) => pitch(P, "Jaw", 0.5 * open);
+  /** Every fin spread wide: straight out to the side, swept back a little. */
+  const spreadFins = (P: Poser) =>
+    pairs.forEach(({ joints }) =>
+      joints.forEach((b) => {
+        aim(P, `${b}L`, k.L.clone().addScaledVector(k.F, -0.25), 0.7);
+        aim(P, `${b}R`, k.L.clone().negate().addScaledVector(k.F, -0.25), 0.7);
+      }),
+    );
   /** Swimming: a ray beats its fins (the body rises on the downstroke), the others their tail. */
   const swim = (P: Poser, ph: number, scale: number) => {
     if (ray) {
@@ -2088,6 +2294,18 @@ function fish(k: Kit): RigClip[] {
           }),
         ]
       : []),
+    // Dive bomb: up toward the surface, then straight down onto the bottom ahead, every fin spread wide (a ray's
+    // wings held out flat) and quivering, the tail driving hard, the jaw open for the impact.
+    diveBomb(k, 0, (t, P, plunge) => {
+      spreadFins(P);
+      wave(P, (TAU * t) / (ray ? 1 : 0.5), ray ? 0.2 : 0.6 + 0.4 * plunge);
+      jaw(P, plunge);
+    }),
+    // Circling pass: fins spread wide and quivering, sweeping around the target with steady tail beats.
+    circlePass(k, 0, (t, P) => {
+      spreadFins(P);
+      wave(P, (TAU * t) / (ray ? 1.25 : 0.625), ray ? 0.2 : 0.7);
+    }),
     spinAttack(k, (P, e) => {
       amps.forEach((a, i) => beat(P, `Spine${i + 1}`, 2 * a * e));
       fins(P, Math.PI / 2, 0.4 * e);
@@ -2117,6 +2335,8 @@ function fish(k: Kit): RigClip[] {
     Attack_TailSlap: ["tail", ["Spine5", "Spine6"], [0.45, 0.75]],
     Attack_FinSlap: ["wing", ["Fin2L", "Fin3L", "Fin2R", "Fin3R"], [0.6, 0.95]],
     Attack_Spin: ["tail", ["Spine5", "Spine6"], [0.2, 0.75]],
+    Attack_DiveBomb: ["head", has("Head") ? ["Head", "Jaw"] : ["Spine1"], [1.65, 2]],
+    Attack_Circle: ray ? ["wing", ["Fin2L", "Fin3L", "Fin2R", "Fin3R"], [0.7, 4.3]] : ["body", /^Spine\d+$/, [0.7, 4.3]],
   });
 }
 
@@ -2190,33 +2410,38 @@ function serpent(k: Kit): RigClip[] {
   /**
    * Line an Asian dragon swims through the air along, `s` from the head end of the body at phase `ph`: a wave running
    * from the head to the tail tip, sideways and up and down a quarter turn apart so the body coils through the air,
-   * growing toward the tail, whose tip also flutters; the neck is carried a little high.
+   * growing toward the tail, whose tip also flutters; the neck is carried a little high. `curve` bends the line along a
+   * turn (1 / its radius; positive turns the tail toward the left).
    */
-  const flightLine = (s: number, ph: number) => {
+  const flightLine = (s: number, ph: number, curve = 0) => {
     const u = s / S;
     const wave = TAU * 1.2 * u - ph;
     const a = S * (0.035 + 0.06 * u);
     const flutter = S * 0.025 * u ** 4;
     return k
       .fwd(-s)
-      .addScaledVector(k.L, a * Math.sin(wave) + flutter * Math.sin(2 * wave))
+      .addScaledVector(k.L, a * Math.sin(wave) + flutter * Math.sin(2 * wave) + 0.5 * curve * s * s)
       .addScaledVector(U, 0.7 * a * Math.cos(wave) + flutter * Math.cos(2 * wave + 1) + 0.06 * S * Math.max(0, 1 - u / 0.25) ** 2);
   };
-  /** Lays every body link along the flight line, whatever pose the model was made in (coiled, standing); the head leads. */
-  const swim = (P: Poser, ph: number) => {
+  /**
+   * Lays every body link along the flight line (bent by `curve`), whatever pose the model was made in (coiled,
+   * standing); the head leads.
+   */
+  const swim = (P: Poser, ph: number, curve = 0) => {
+    const line = (s: number) => flightLine(s, ph, curve);
     // The middle of the body holds its place, not the hips: they ride the wave like every other part.
-    const mid = Array.from({ length: 17 }, (_, j) => flightLine((j / 16) * S, ph))
+    const mid = Array.from({ length: 17 }, (_, j) => line((j / 16) * S))
       .reduce((a, p) => a.add(p), new Vector3())
       .divideScalar(17);
-    const hips = flightLine(stretch.get("Hips")!.reduce((a, x) => a + x), ph).sub(mid);
+    const hips = line(stretch.get("Hips")!.reduce((a, x) => a + x)).sub(mid);
     P.move("Root", hips.addScaledVector(k.F, -hips.dot(k.F)));
     for (const b of [...front, ...back]) {
       const [s, l] = stretch.get(b)!;
-      const [near, far] = [flightLine(s, ph), flightLine(s + l, ph)];
+      const [near, far] = [line(s), line(s + l)];
       // Front links point toward the head, back ones toward the tail tip.
       aim(P, b, front.includes(b) ? near.sub(far) : far.sub(near));
     }
-    aim(P, "Head", flightLine(0, ph).sub(flightLine(0.1 * S, ph)).normalize().add(k.fwd(1.5)).add(k.up(0.15)));
+    aim(P, "Head", line(0).sub(line(0.1 * S)).normalize().add(k.fwd(1.5)).add(k.up(0.15)));
   };
   /** Each feeler (a dragon's whiskers): its links, base first, and its side (1 = left). */
   const feelers = feelerChains(r).map((bones) => ({ bones, side: bones[0].endsWith("L") ? 1 : -1 }));
@@ -2256,6 +2481,23 @@ function serpent(k: Kit): RigClip[] {
         tuck(P);
         legs(P, 2 * ph, 0.15);
         stream(P, ph);
+      }),
+      // Dive bomb: the whole body swims along its wave up high, then plunges head first, jaw open, the whiskers
+      // streaming back and every crest quivering.
+      diveBomb(k, 0.35 * H, (t, P, plunge) => {
+        swim(P, (TAU * t) / 1.5);
+        tuck(P);
+        legs(P, (TAU * t) / 0.75, 0.15 * (1 - plunge));
+        stream(P, (TAU * t) / 1.5);
+        jaw(P, plunge);
+      }),
+      // Circling pass: the body bends along the circle (the tail trailing on the inside of the turn) as it swims
+      // around the target.
+      circlePass(k, 0.35 * H, (t, P, bank) => {
+        swim(P, (TAU * t) / 1.25, -bank / circleRadius(k));
+        tuck(P);
+        legs(P, (TAU * t) / 0.625, 0.15);
+        stream(P, (TAU * t) / 1.25);
       }),
       ...(r.index.has("FrontUpperLegL")
         ? [
@@ -2328,6 +2570,8 @@ const SERPENT_ATTACKS: AttackTable = {
   Attack_Constrict: ["body", /^(Hips|Spine\d+|Tail\d+)$/, [0.8, 2.4]],
   Attack_TailSwipe: ["tail", ["Tail5", "Tail6", "Tail7", "Tail8"], [0.55, 0.95]],
   Attack_Claw: ["claw", ["FrontLowerLegL", "FrontUpperLegL"], [0.5, 0.8]],
+  Attack_DiveBomb: ["head", ["Head", "Jaw"], [1.65, 2]],
+  Attack_Circle: ["body", /^(Hips|Spine\d+|Tail\d+)$/, [0.7, 4.3]],
 };
 
 // ---------------------------------------------------------------- vehicles and aircraft

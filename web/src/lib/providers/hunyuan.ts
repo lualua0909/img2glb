@@ -51,13 +51,19 @@ export function createHunyuanProvider(opts: { name: string; url: string; token: 
           edit_prompt: input.refine?.prompt,
           edit_image_guidance: input.refine?.imageGuidance,
           mesh_url: input.refine?.meshUrl,
+          views: input.multiview?.viewUrls,
+          shape_candidates: input.multiview?.candidates,
+          omni: input.multiview?.omni,
+          paint_all_views: input.multiview?.paintAllViews,
+          wing_sheets: input.multiview?.wingSheets,
         }),
       });
       if (!res.ok) throw new Error(`Worker rejected job: ${res.status} ${await res.text()}`);
       const job = (await res.json()) as WorkerJob;
       // The worker's zero-based queue position excludes the job currently using the GPU.
-      // Reserve one extra slot for it, plus this job's own execution time.
-      return { jobId: job.id, queueSlots: job.status === "queued" ? (job.queue_position ?? 0) + 2 : 1 };
+      // Reserve one extra slot for it, plus this job's own execution time (a slot per shape it generates).
+      const weight = input.multiview ? input.multiview.candidates + (input.multiview.omni ? 1 : 0) : 1;
+      return { jobId: job.id, weight, queueSlots: job.status === "queued" ? (job.queue_position ?? 0) + 1 + weight : weight };
     },
 
     async cancel(state) {
@@ -74,7 +80,7 @@ export function createHunyuanProvider(opts: { name: string; url: string; token: 
 
       switch (job.status) {
         case "queued":
-          return { type: "running", state: { ...state, queueSlots: Math.max(Number(state.queueSlots) || 1, (job.queue_position ?? 0) + 2) }, message: `In queue (position ${(job.queue_position ?? 0) + 1})`, progress: 0 };
+          return { type: "running", state: { ...state, queueSlots: Math.max(Number(state.queueSlots) || 1, (job.queue_position ?? 0) + 1 + (Number(state.weight) || 1)) }, message: `In queue (position ${(job.queue_position ?? 0) + 1})`, progress: 0 };
         case "running":
           return { type: "running", state, message: job.stage ?? "Generating", progress: job.progress };
         case "failed":

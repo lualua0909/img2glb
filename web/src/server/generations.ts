@@ -7,9 +7,18 @@ import {
   type Quality,
   type TextureCleanLevel,
   type UseCase,
+  type ViewName,
 } from "@/lib/config";
 import { db, schema } from "@/lib/db";
-import type { CompressInfo, Generation, GenerationStats, RefineOptions, RigInfo, TextureCleanInfo } from "@/lib/db/schema";
+import type {
+  CompressInfo,
+  Generation,
+  GenerationStats,
+  MultiViewOptions,
+  RefineOptions,
+  RigInfo,
+  TextureCleanInfo,
+} from "@/lib/db/schema";
 import { isLocal } from "@/lib/env";
 import { getProvider, PROVIDER } from "@/lib/providers";
 import { generationTimeoutMinutes } from "@/lib/generation-timeout";
@@ -45,6 +54,9 @@ export type CreateInput = {
   /** Texture size cap in px; omitted or MAX_TEXTURE_SIZE = engine native size. */
   textureSize?: number;
   flatShading?: boolean;
+  /** Extra views of the object in `image` (image mode only). */
+  views?: Partial<Record<ViewName, { bytes: Uint8Array; contentType: string }>>;
+  multiview?: Omit<MultiViewOptions, "keys">;
 };
 
 export function sniffImageType(b: Uint8Array): "png" | "jpeg" | "webp" | null {
@@ -69,6 +81,21 @@ export async function createGeneration(userId: string, input: CreateInput): Prom
     await putObject(inputImageKey, input.image.bytes);
   }
 
+  let multiview: MultiViewOptions | null = null;
+  const views = Object.entries(input.views ?? {}) as [ViewName, { bytes: Uint8Array }][];
+  if (views.length || input.multiview?.wingSheets) {
+    if (input.mode !== "image") throw new UserFacingError("Extra views and wing sheets need an image");
+    const viewKeys: MultiViewOptions["keys"] = {};
+    for (const [name, view] of views) {
+      const kind = sniffImageType(view.bytes);
+      if (!kind) throw new UserFacingError("Upload a PNG, JPEG or WebP image");
+      viewKeys[name] = keys.view(userId, id, name, kind === "jpeg" ? "jpg" : kind);
+      await putObject(viewKeys[name], view.bytes);
+    }
+    multiview = { candidates: 1, omni: false, paintAllViews: false, ...input.multiview, keys: viewKeys };
+    if (!views.length) Object.assign(multiview, { candidates: 1, omni: false, paintAllViews: false });
+  }
+
   return submitGeneration(settings, {
     id,
     userId,
@@ -82,9 +109,15 @@ export async function createGeneration(userId: string, input: CreateInput): Prom
     faceCount: input.faceCount ?? settings.faceCount[input.useCase],
     textureSize: input.textureSize && input.textureSize < MAX_TEXTURE_SIZE ? input.textureSize : null,
     flatShading: input.flatShading ?? false,
-    cost: isLocal() ? 0 : generationCost(input, settings.credits),
+    multiview,
+    cost: isLocal() ? 0 : generationCost({ ...input, multiview }, settings.credits),
     provider: PROVIDER,
   });
+}
+
+/** Storage keys of a generation's uploaded files (input image and extra views). */
+function inputKeys(g: Pick<Generation, "inputImageKey" | "multiview">): string[] {
+  return [g.inputImageKey, ...Object.values(g.multiview?.keys ?? {})].filter((k): k is string => Boolean(k));
 }
 
 /** Retry a failed job using its stored input and settings. Keep the failed attempt for history. */
@@ -104,6 +137,15 @@ export async function retryGeneration(userId: string, generationId: string): Pro
   const id = crypto.randomUUID();
   const inputImageKey = source.inputImageKey ? keys.input(userId, id, source.inputImageKey.split(".").pop()!) : null;
   if (source.inputImageKey && inputImageKey) await copyObject(source.inputImageKey, inputImageKey);
+  let multiview: MultiViewOptions | null = null;
+  if (source.multiview) {
+    const viewKeys: MultiViewOptions["keys"] = {};
+    for (const [name, key] of Object.entries(source.multiview.keys) as [ViewName, string][]) {
+      viewKeys[name] = keys.view(userId, id, name, key.split(".").pop()!);
+      await copyObject(key, viewKeys[name]);
+    }
+    multiview = { ...source.multiview, keys: viewKeys };
+  }
 
   return submitGeneration(settings, {
     id,
@@ -118,6 +160,7 @@ export async function retryGeneration(userId: string, generationId: string): Pro
     faceCount: source.faceCount,
     textureSize: source.textureSize,
     flatShading: source.flatShading,
+    multiview,
     cost: isLocal() ? 0 : generationCost(source, settings.credits),
     parentId: source.id,
     rootId: source.rootId ?? source.id,
@@ -180,7 +223,7 @@ type NewGeneration = Omit<typeof schema.generation.$inferInsert, "status" | "pro
   cost: number;
 };
 
-/** Debit credits, insert the row and hand the job to the provider. Deletes `row.inputImageKey` if the insert fails. */
+/** Debit credits, insert the row and hand the job to the provider. Deletes the row's input files if the insert fails. */
 async function submitGeneration(settings: AppSettings, row: NewGeneration, refine?: StartInput["refine"]) {
   const { id, userId, cost } = row;
   const provider = getProvider(row.provider);
@@ -205,7 +248,7 @@ async function submitGeneration(settings: AppSettings, row: NewGeneration, refin
     timeoutMinutes *= ahead + 1;
     await tx.insert(schema.generation).values({ ...row, provider: provider.name, progressMessage: "Submitting" });
   }).catch(async (err) => {
-    if (row.inputImageKey) await deleteObjects([row.inputImageKey]).catch(() => {});
+    await deleteObjects(inputKeys({ inputImageKey: row.inputImageKey ?? null, multiview: row.multiview ?? null })).catch(() => {});
     throw err;
   });
 
@@ -224,6 +267,22 @@ async function submitGeneration(settings: AppSettings, row: NewGeneration, refin
       seed: row.seed,
       guidanceScale: settings.generation.guidanceScale ?? undefined,
       refine,
+      multiview: row.multiview
+        ? {
+            viewUrls: Object.fromEntries(
+              await Promise.all(
+                Object.entries(row.multiview.keys).map(async ([name, key]) => [
+                  name,
+                  await signedGetUrl(key, { expiresIn: 7 * 24 * 3600 }),
+                ]),
+              ),
+            ),
+            candidates: row.multiview.candidates,
+            omni: row.multiview.omni,
+            paintAllViews: row.multiview.paintAllViews,
+            wingSheets: row.multiview.wingSheets ?? false,
+          }
+        : undefined,
     });
     const [started] = await db
       .update(schema.generation)
@@ -507,7 +566,7 @@ export async function deleteGeneration(userId: string, id: string) {
   if (!gen) return false;
   if (ACTIVE.includes(gen.status as (typeof ACTIVE)[number]))
     throw new UserFacingError("Wait for the generation to finish before deleting it", 409);
-  await deleteObjects([gen.inputImageKey, gen.modelKey].filter((k): k is string => Boolean(k)));
+  await deleteObjects([...inputKeys(gen), gen.modelKey].filter((k): k is string => Boolean(k)));
   await db.delete(schema.generation).where(eq(schema.generation.id, id));
   return true;
 }
@@ -538,6 +597,8 @@ export type GenerationDTO = {
   compress: CompressInfo | null;
   textureClean: TextureCleanInfo | null;
   stats: GenerationStats | null;
+  /** Extra views it was generated from, with the multi-view options. */
+  multiview: (Omit<MultiViewOptions, "keys"> & { viewUrls: Partial<Record<ViewName, string>> }) | null;
 };
 
 export function modelBaseName(g: Pick<Generation, "id" | "prompt">) {
@@ -573,6 +634,21 @@ export async function toDTO(g: Generation): Promise<GenerationDTO> {
     compress: g.compress,
     textureClean: g.textureClean,
     stats: g.stats,
+    multiview: g.multiview
+      ? {
+          candidates: g.multiview.candidates,
+          omni: g.multiview.omni,
+          paintAllViews: g.multiview.paintAllViews,
+          wingSheets: g.multiview.wingSheets,
+          viewUrls: Object.fromEntries(
+            (
+              await Promise.all(
+                Object.entries(g.multiview.keys).map(async ([name, key]) => [name, await signedFileUrl(key)] as const),
+              )
+            ).filter(([, url]) => url),
+          ),
+        }
+      : null,
   };
 }
 

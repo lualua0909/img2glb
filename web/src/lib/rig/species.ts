@@ -86,7 +86,7 @@ export const SPECIES: Species[] = [
     category: "quadruped",
     options: { wings: true, jaw: true },
     locomotion: ["Walk", "Run", "Fly", "Glide", "Wings_Fold", "Wings_Spread"],
-    attacks: ["Attack_Bite", "Attack_Swipe", "Attack_TailSwipe", "Attack_Breath"],
+    attacks: ["Attack_Bite", "Attack_Swipe", "Attack_TailSwipe", "Attack_Breath", "Attack_DiveBomb", "Attack_Circle"],
   },
   {
     // Two legs, the wings are its front limbs.
@@ -95,7 +95,7 @@ export const SPECIES: Species[] = [
     category: "quadruped",
     options: { bipedal: true, armless: true, wings: true, jaw: true },
     locomotion: ["Walk", "Run", "Fly", "Glide", "Wings_Fold", "Wings_Spread"],
-    attacks: ["Attack_Bite", "Attack_TailSwipe", "Attack_Breath"],
+    attacks: ["Attack_Bite", "Attack_TailSwipe", "Attack_Breath", "Attack_DiveBomb", "Attack_Circle"],
   },
   {
     id: "fourWingedFlyer",
@@ -112,7 +112,7 @@ export const SPECIES: Species[] = [
     category: "bird",
     options: { wingPairs: 2, legless: true },
     locomotion: ["Fly", "Glide", "Wings_Fold", "Wings_Spread"],
-    attacks: ["Attack_Peck", "Attack_Spin"],
+    attacks: ["Attack_Peck", "Attack_Spin", "Attack_DiveBomb", "Attack_Circle"],
   },
   {
     id: "snake",
@@ -130,7 +130,7 @@ export const SPECIES: Species[] = [
     category: "serpent",
     options: { jaw: true, legs: true, feelers: 1 },
     locomotion: ["Fly", "Slither"],
-    attacks: ["Attack_Strike", "Attack_Claw", "Attack_TailSwipe"],
+    attacks: ["Attack_Strike", "Attack_Claw", "Attack_TailSwipe", "Attack_DiveBomb", "Attack_Circle"],
   },
   {
     // Six legs and two wing pairs on the thorax, the abdomen a tail chain, antennae; the wings beat fast and stiff.
@@ -195,7 +195,7 @@ export const SPECIES: Species[] = [
     category: "fish",
     options: { fins: 1, jaw: true, swim: "fish" },
     locomotion: ["Swim", "Swim_Fast", "Swim_Idle"],
-    attacks: ["Attack_Bite", "Attack_Ram", "Attack_TailSlap"],
+    attacks: ["Attack_Bite", "Attack_Ram", "Attack_TailSlap", "Attack_DiveBomb", "Attack_Circle"],
   },
   {
     id: "dolphin",
@@ -211,7 +211,7 @@ export const SPECIES: Species[] = [
     category: "fish",
     options: { fins: 1, jaw: true, swim: "whale" },
     locomotion: ["Swim", "Swim_Fast", "Swim_Idle"],
-    attacks: ["Attack_Bite", "Attack_TailSlap", "Attack_FinSlap"],
+    attacks: ["Attack_Bite", "Attack_TailSlap", "Attack_FinSlap", "Attack_DiveBomb", "Attack_Circle"],
   },
   {
     id: "mantaRay",
@@ -220,7 +220,7 @@ export const SPECIES: Species[] = [
     // Horns: the cephalic fins in front of a manta's eyes.
     options: { fins: 1, horns: 2, swim: "ray" },
     locomotion: ["Swim", "Swim_Fast", "Swim_Idle", "Glide"],
-    attacks: ["Attack_FinSlap", "Attack_TailSlap"],
+    attacks: ["Attack_FinSlap", "Attack_TailSlap", "Attack_DiveBomb", "Attack_Circle"],
   },
 ];
 

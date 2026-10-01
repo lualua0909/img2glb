@@ -6,6 +6,8 @@ import { env } from "@/lib/env";
 
 export const keys = {
   input: (userId: string, id: string, ext: string) => `inputs/${userId}/${id}.${ext}`,
+  /** An extra view (multi-view generation) of the input image. */
+  view: (userId: string, id: string, view: string, ext: string) => `inputs/${userId}/${id}-${view}.${ext}`,
   model: (userId: string, id: string) => `models/${userId}/${id}.glb`,
   mapInput: (userId: string, id: string, ext: string) => `maps/${userId}/${id}-input.${ext}`,
   mapModel: (userId: string, id: string) => `maps/${userId}/${id}.glb`,

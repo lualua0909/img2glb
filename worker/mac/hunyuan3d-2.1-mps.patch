@@ -350,7 +350,7 @@ index 37ebde0..82c7da7 100644
              results.append(result)
  
 diff --git a/hy3dpaint/textureGenPipeline.py b/hy3dpaint/textureGenPipeline.py
-index a582892..78bbfac 100644
+index a582892..c4cbb68 100644
 --- a/hy3dpaint/textureGenPipeline.py
 +++ b/hy3dpaint/textureGenPipeline.py
 @@ -35,8 +35,8 @@ diffusers_logging.set_verbosity(50)
@@ -373,6 +373,21 @@ index a582892..78bbfac 100644
          )
          self.view_processor = ViewProcessor(self.config, self.render)
          self.load_models()
+@@ -95,12 +97,11 @@ class Hunyuan3DPaintPipeline:
+         # Ensure image_prompt is a list
+         if isinstance(image_path, str):
+             image_prompt = Image.open(image_path)
+-        elif isinstance(image_path, Image.Image):
++        else:
+             image_prompt = image_path
+         if not isinstance(image_prompt, List):
+             image_prompt = [image_prompt]
+-        else:
+-            image_prompt = image_path
++        image_prompt = [Image.open(i) if isinstance(i, str) else i for i in image_prompt]
+ 
+         # Process mesh
+         path = os.path.dirname(mesh_path)
 diff --git a/hy3dpaint/utils/image_super_utils.py b/hy3dpaint/utils/image_super_utils.py
 index 8d56d4f..4349345 100644
 --- a/hy3dpaint/utils/image_super_utils.py
@@ -385,3 +400,16 @@ index 8d56d4f..4349345 100644
              gpu_id=None,
          )
          self.upsampler = upsampler
+diff --git a/hy3dpaint/utils/multiview_utils.py b/hy3dpaint/utils/multiview_utils.py
+index 03f0557..550654f 100644
+--- a/hy3dpaint/utils/multiview_utils.py
++++ b/hy3dpaint/utils/multiview_utils.py
+@@ -111,7 +111,7 @@ class multiviewDiffusionNet:
+         }
+ 
+         mvd_image = self.pipeline(
+-            input_images[0:1],
++            input_images,  # every reference image (reference attention takes N refs); upstream passed only the first
+             num_inference_steps=infer_steps_dict[self.pipeline.scheduler.__class__.__name__],
+             prompt=prompt,
+             sync_condition=sync_condition,

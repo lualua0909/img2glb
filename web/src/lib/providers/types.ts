@@ -24,6 +24,18 @@ export type StartInput = {
     /** Keep this mesh and only repaint its texture. */
     meshUrl?: string;
   };
+  /** Extra views of the object in `imageUrl` (fetchable URLs by view name) and how to use them. */
+  multiview?: {
+    viewUrls: Record<string, string>;
+    /** Shapes generated; the one matching the views best is kept. */
+    candidates: number;
+    /** Also generate a Hunyuan3D-Omni shape conditioned on the views' visual hull. */
+    omni: boolean;
+    /** Give the views to the texture model as extra references. */
+    paintAllViews: boolean;
+    /** Replace membrane wings by thin double-sided sheets textured from the image(s). */
+    wingSheets: boolean;
+  };
 };
 
 type Download = { url: string; headers?: Record<string, string> };

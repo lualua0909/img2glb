@@ -54,10 +54,12 @@ import {
   type AppSettings,
   type CreditCosts,
 } from "@/lib/settings";
+import { prepareImage } from "@/lib/prepare-image";
 import { cn } from "@/lib/utils";
 import type { GenerationDTO } from "@/server/generations";
 import { GenerationView } from "./generation-view";
 import { useI18n } from "./i18n-provider";
+import { EMPTY_MULTI_VIEW, MultiViewInput, type MultiViewState } from "./multi-view-input";
 
 const MeshPreview = dynamic(() => import("./mesh-preview"), { ssr: false });
 
@@ -91,30 +93,6 @@ const sliderToFaces = (p: number) => {
 };
 const facesToSlider = (v: number) =>
   Math.round((Math.log(v / MIN_FACE_COUNT) / faceRange) * SLIDER_STEPS);
-
-/** Downscale to ≤1024px so uploads stay small; PNG keeps alpha, others become JPEG. */
-async function prepareImage(file: File): Promise<File> {
-  const bitmap = await createImageBitmap(file);
-  const scale = Math.min(1, 1024 / Math.max(bitmap.width, bitmap.height));
-  if (scale === 1 && file.size < 3 * 1024 * 1024) return file;
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.round(bitmap.width * scale);
-  canvas.height = Math.round(bitmap.height * scale);
-  canvas.getContext("2d")!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  const type = file.type === "image/png" ? "image/png" : "image/jpeg";
-  const blob = await new Promise<Blob>((ok, fail) =>
-    canvas.toBlob(
-      (b) => (b ? ok(b) : fail(new Error("encode failed"))),
-      type,
-      0.92,
-    ),
-  );
-  return new File(
-    [blob],
-    file.name.replace(/\.\w+$/, type === "image/png" ? ".png" : ".jpg"),
-    { type },
-  );
-}
 
 /** Admin-configured bits the studio needs. `pausedMessage` is set while generation is paused. */
 export type StudioOptions = {
@@ -215,9 +193,14 @@ export function Studio({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [current, setCurrent] = useState<GenerationDTO | null>(null);
+  const [multiView, setMultiView] = useState<MultiViewState>(EMPTY_MULTI_VIEW);
+  const views = mode === "image" ? Object.entries(multiView.views) : [];
+  const wingSheets = mode === "image" && multiView.wingSheets;
 
   const cost =
-    credits === null ? 0 : generationCost({ mode, textured }, options.costs);
+    credits === null
+      ? 0
+      : generationCost({ mode, textured, multiview: views.length ? multiView : null }, options.costs);
   const canAfford = credits === null || credits >= cost;
   const ready = mode === "image" ? Boolean(file) : prompt.trim().length >= 3;
   // Admin labels win; untouched built-in labels are shown translated.
@@ -317,6 +300,13 @@ export function Studio({
     body.set("flatShading", String(flatShading));
     if (textured) body.set("textureSize", String(textureSize));
     if (mode === "image" && file) body.set("image", file);
+    if (views.length) {
+      for (const [name, view] of views) body.set(`view_${name}`, view.file);
+      body.set("candidates", String(multiView.candidates));
+      body.set("omni", String(multiView.omni));
+      body.set("paintAllViews", String(multiView.paintAllViews));
+    }
+    if (wingSheets) body.set("wingSheets", "true");
     if (mode === "text") body.set("prompt", prompt.trim());
     try {
       const res = await fetch("/api/generations", { method: "POST", body });
@@ -567,6 +557,23 @@ export function Studio({
             {preset(quality).hint}
           </p>
         </Section>
+
+        {mode === "image" ? (
+          <Accordion type="single" collapsible className="-my-2">
+            <AccordionItem value="views" className="border-none">
+              <AccordionTrigger className="px-1 text-[13px] font-semibold text-muted-foreground hover:no-underline">
+                <span>
+                  {t.studio.multiView}
+                  {views.length ? ` · ${views.length}` : ""}
+                  {wingSheets ? ` · ${t.studio.wingSheetsShort}` : ""}
+                </span>
+              </AccordionTrigger>
+              <AccordionContent className="px-px pt-1">
+                <MultiViewInput value={multiView} onChange={setMultiView} onError={setError} />
+              </AccordionContent>
+            </AccordionItem>
+          </Accordion>
+        ) : null}
 
         <Accordion type="single" collapsible className="-my-2">
           <AccordionItem value="advanced" className="border-none">

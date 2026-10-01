@@ -97,12 +97,11 @@ class Hunyuan3DPaintPipeline:
         # Ensure image_prompt is a list
         if isinstance(image_path, str):
             image_prompt = Image.open(image_path)
-        elif isinstance(image_path, Image.Image):
+        else:
             image_prompt = image_path
         if not isinstance(image_prompt, List):
             image_prompt = [image_prompt]
-        else:
-            image_prompt = image_path
+        image_prompt = [Image.open(i) if isinstance(i, str) else i for i in image_prompt]
 
         # Process mesh
         path = os.path.dirname(mesh_path)

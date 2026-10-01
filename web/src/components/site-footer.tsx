@@ -25,10 +25,14 @@ export async function SiteFooter() {
             <a href="/HUNYUAN3D_LICENSE.txt" className="hover:text-primary">
               {t.site.license}
             </a>
+            <a href="/HUNYUAN3D_OMNI_LICENSE.txt" className="hover:text-primary">
+              {t.site.omniLicense}
+            </a>
           </nav>
           <p>
             {t.site.operatedBy(APP_NAME, OPERATOR_NAME)} Powered by Tencent Hunyuan. Tencent Hunyuan 3D 2.1 is licensed
-            under the Tencent Hunyuan 3D 2.1 Community License Agreement, Copyright © 2025 Tencent. All Rights Reserved.
+            under the Tencent Hunyuan 3D 2.1 Community License Agreement and Tencent Hunyuan 3D Omni under the Tencent
+            Hunyuan 3D Omni Community License Agreement, Copyright © 2025 Tencent. All Rights Reserved.
             The trademark rights of “Tencent Hunyuan” are owned by Tencent or its affiliate. Tencent is not affiliated
             with, associated with, sponsoring, or endorsing this service.
           </p>

@@ -74,6 +74,18 @@ Vietnamese) are translated to English first by `TRANSLATE_MODEL` (~300 MB, CPU).
 job and download into `data/models/` the first time. Edits of color, material and style work well; shape changes
 ("make the roof taller") only partly.
 
+## Multi-view jobs
+
+A job with `views` (`{"front"|"back"|"side"|"top": url}`, more orthographic views of the object in `image_url`, any
+mirror) is matched against them by silhouette (`multiview.py`, see `docs/adr/0005-multi-view-references.md`): the
+object's heading and per-axis proportions are fitted, and the views' colors are projected onto the painted texture.
+`shape_candidates` (1-4) generates that many Hunyuan3D-2.1 shapes (seeds `seed`, `seed + 1`, ...) and keeps the one
+matching best; `omni` also generates one with Hunyuan3D-Omni (`../Hunyuan3D-Omni`, `OMNI_MODEL`, ~13.5 GB EMA weights
+downloaded into `data/models/` on first use) conditioned on the views' visual hull; `paint_all_views` gives the views
+to the texture model as extra references (experimental). `wing_sheets` (`wings.py`, also without views) replaces
+membrane wings by thin double-sided sheets textured from the image. The job's `timings` report the silhouette IoU
+of each candidate (`candidate_<i>_iou`), of 2.1 vs Omni (`hy21_iou`, `omni_iou`) and per view (`view_iou_<name>`).
+
 ## Auto-rigging (CUDA hosts only)
 
 A job with `rig_url` (a finished GLB) returns it with a predicted skeleton and skin weights, textures and scale kept.
@@ -104,6 +116,8 @@ Mac, `autorig` is false, `rig_url` jobs get 501 and the editor keeps its browser
 | `AUTORIG_TIMEOUT` | `1800` | seconds before an auto-rig job is killed |
 | `ALLOWED_IMAGE_HOSTS` | empty | comma list of hosts serving input images (the web app, e.g. `localhost`); strongly recommended (SSRF) |
 | `EDIT_MODEL` | `timbrooks/instruct-pix2pix` | refinement image editor |
+| `OMNI_MODEL` | `tencent/Hunyuan3D-Omni` | shape from the visual hull (multi-view jobs with `omni`) |
+| `OMNI_REPO` | `../Hunyuan3D-Omni` | vendored Hunyuan3D-Omni code |
 | `TRANSLATE_MODEL` | `Helsinki-NLP/opus-mt-vi-en` | translates non-English refinement prompts |
 | `MAX_QUEUE` | `50` | 503 when full |
 | `JOB_TTL_SECONDS` | `10800` | finished jobs are purged after this |
