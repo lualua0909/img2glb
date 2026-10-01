@@ -96,3 +96,23 @@ test("wyvern, four-winged and legless flyer presets get every clip they need", (
     for (const c of clips) if (c.attack) assert.ok(c.attack.bones.length, `${id}: ${c.clip.name} has its organ`);
   }
 });
+
+test("each wing pair roots at its own marker, on the body bone nearest to it", () => {
+  for (const category of ["quadruped", "bird"] as const) {
+    const o = { ...DEFAULT_RIG_OPTIONS, wings: true, wingPairs: 3, ...(category === "bird" && { legless: true }) };
+    const model = flyer();
+    const k = guessMarkers(category, model, o);
+    const ids = markerIds(category, o).ids;
+    for (const w of ["wing", "wing2", "wing3"]) assert.ok(ids.includes(`${w}RootL`) && ids.includes(`${w}RootR`), `${category}: ${w}Root`);
+    const roots = ["WingUpperL", "Wing2UpperL", "Wing3UpperL"].map((n) => planRig(category, model, k, o).bones.find((b) => b.name === n)!.head);
+    assert.ok(roots[0].distanceTo(roots[1]) > 0.05 && roots[1].distanceTo(roots[2]) > 0.05, `${category}: pairs root apart`);
+
+    // Dragging the third pair's root back to the tail moves that wing alone and hangs it from the tail end.
+    const moved = { ...k, wing3RootL: k.tailTip.clone().lerp(k.wing3RootL, 0.1) };
+    const p = planRig(category, model, moved, o);
+    const bone = (n: string) => p.bones.find((b) => b.name === n)!;
+    assert.ok(bone("Wing3UpperL").head.distanceTo(moved.wing3RootL) < 1e-6, `${category}: root at the marker`);
+    assert.ok(/^(Tail\d*|Hips)$/.test(bone("Wing3UpperL").parent!), `${category}: parent ${bone("Wing3UpperL").parent}`);
+    assert.ok(bone("WingUpperL").head.distanceTo(roots[0]) < 1e-6, `${category}: other wings stay`);
+  }
+});

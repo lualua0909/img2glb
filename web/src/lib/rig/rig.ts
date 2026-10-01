@@ -36,6 +36,8 @@ export type RigOptions = {
   bipedal: boolean;
   /** With `bipedal`: no front limbs at all, e.g. a wyvern whose wings are its arms (animals). */
   armless: boolean;
+  /** A third pair of legs between the front and hind ones, e.g. a six-legged beast or an insect (animals). */
+  sixLegs: boolean;
   /** Five editable neck links and a long tail, for sauropods. */
   longNeck: boolean;
   /** Four short legs along the body, e.g. an Asian dragon (serpents). */
@@ -49,6 +51,11 @@ export type RigOptions = {
    * sea life). Each is a three-link chain from its root to its tip that trails the body's motion; no hitbox.
    */
   feelers: number;
+  /**
+   * Sections of a crest along the back: a dorsal fin, a sail, plates or a mane (characters, animals, birds, serpents,
+   * sea life). Each is a three-link chain from its root on the back to its tip that sways with the motion; no hitbox.
+   */
+  crests: number;
   /** Weapon held in each hand (characters): it gets its own bone, so attacks swing, aim and hit with it. */
   weaponRight: Weapon;
   weaponLeft: Weapon;
@@ -66,11 +73,13 @@ export const DEFAULT_RIG_OPTIONS: RigOptions = {
   legless: false,
   bipedal: false,
   armless: false,
+  sixLegs: false,
   longNeck: false,
   legs: false,
   fins: false,
   swim: "fish",
   feelers: 0,
+  crests: 0,
   weaponRight: "none",
   weaponLeft: "none",
 };
@@ -333,9 +342,9 @@ const SIDES = [
 export const MAX_WING_PAIRS = 3;
 /** Marker prefix of a wing pair (1 = the front one). */
 const wingMarker = (pair: number) => `wing${pair > 1 ? pair : ""}`;
-/** Elbow, wrist and tip markers of every wing pair, left and right. */
+/** Root, elbow, wrist and tip markers of every wing pair, left and right. */
 const wingIds = (pairs: number) =>
-  Array.from({ length: pairs }, (_, i) => ["Elbow", "Wrist", "Tip"].flatMap((j) => [`${wingMarker(i + 1)}${j}L`, `${wingMarker(i + 1)}${j}R`])).flat();
+  Array.from({ length: pairs }, (_, i) => ["Root", "Elbow", "Wrist", "Tip"].flatMap((j) => [`${wingMarker(i + 1)}${j}L`, `${wingMarker(i + 1)}${j}R`])).flat();
 
 /**
  * Wing chain from `root` through the elbow and wrist markers to the tip: fold, spread and flap need all three joints.
@@ -362,6 +371,13 @@ function wingBones(
     wing(bone(`${pre}Fore${s}`, `${pre}Upper${s}`, elbow, wrist)),
     wing(bone(`${pre}Hand${s}`, `${pre}Fore${s}`, wrist, tip)),
   ];
+}
+
+/** Body bone a wing rooted at `root` hangs from: the nearest of the trunk's, the neck's and the tail's. */
+function wingParent(bones: BoneSpec[], root: Vector3) {
+  const q = new Vector3();
+  const gap = (b: BoneSpec) => root.distanceTo(new Line3(b.head, b.tail).closestPointToPoint(root, true, q));
+  return bones.filter((b) => /^(Hips|Spine|Chest|Neck\d*|Tail\d*)$/.test(b.name)).reduce((a, b) => (gap(b) < gap(a) ? b : a)).name;
 }
 
 /** Jaw from a hinge under the skull to the chin, gated below the mouth line so the upper jaw stays on the head. */
@@ -891,6 +907,7 @@ const quadruped: Template = {
     "belly",
     "tailTip",
     ...(o.bipedal ? (o.armless ? [] : ["elbow", "wrist"]) : ["frontKnee", "frontFoot"]).flatMap((j) => [`${j}L`, `${j}R`]),
+    ...(o.sixLegs && !o.bipedal ? ["midHip", "midKnee", "midFoot"] : []).flatMap((j) => [`${j}L`, `${j}R`]),
     ...["rearKnee", "rearFoot"].flatMap((j) => [`${j}L`, `${j}R`]),
     ...(o.wings ? wingIds(o.wingPairs) : []),
   ],
@@ -912,17 +929,22 @@ const quadruped: Template = {
     const { forward: F, lateral: L } = fr;
     const { min: sMin, len } = range(m, F);
     const latC = m.center.dot(L);
-    // Feet: low vertices split into a front and a rear group by forward position (2-means); all of them are hind feet
-    // when it walks on two legs.
-    let [front, rear] = [sMin + 0.75 * len, sMin + 0.25 * len];
-    if (o.bipedal) rear = low.length ? low.reduce((a, p) => a + p.dot(F), 0) / low.length : m.center.dot(F);
+    // Feet: low vertices split into a front, (six legs) a middle and a rear group by forward position (k-means); all
+    // of them are hind feet when it walks on two legs.
+    const six = o.sixLegs && !o.bipedal;
+    const pairs = six ? [sMin + 0.75 * len, sMin + 0.5 * len, sMin + 0.25 * len] : [sMin + 0.75 * len, sMin + 0.25 * len];
+    if (o.bipedal) pairs[1] = low.length ? low.reduce((a, p) => a + p.dot(F), 0) / low.length : m.center.dot(F);
     else
       for (let it = 0; it < 6; it++) {
-        const f = low.filter((p) => Math.abs(p.dot(F) - front) < Math.abs(p.dot(F) - rear));
-        const r = low.filter((p) => Math.abs(p.dot(F) - front) >= Math.abs(p.dot(F) - rear));
-        if (f.length) front = f.reduce((a, p) => a + p.dot(F), 0) / f.length;
-        if (r.length) rear = r.reduce((a, p) => a + p.dot(F), 0) / r.length;
+        const groups = pairs.map((): number[] => []);
+        for (const p of low) {
+          const s = p.dot(F);
+          groups[pairs.reduce((best, c, j) => (Math.abs(s - c) < Math.abs(s - pairs[best]) ? j : best), 0)].push(s);
+        }
+        groups.forEach((g, j) => g.length && (pairs[j] = g.reduce((a, s) => a + s, 0) / g.length));
       }
+    let front = pairs[0];
+    const rear = pairs.at(-1)!;
     const halfWidth = Math.abs(m.size.x * L.x + m.size.z * L.z) / 2;
     const footLat = (s: number) => {
       const side = low.filter((p) => Math.abs(p.dot(F) - s) < 0.12 * len && p.dot(L) > latC);
@@ -991,6 +1013,17 @@ const quadruped: Template = {
       k.frontFootL = at(fr, front, footLat(front), footY);
       k.frontKneeL = at(fr, front, footLat(front), footY + 0.45 * (shoulders.y - footY));
     }
+    if (six) {
+      // Middle hip: where the leg leaves the underside of the body (not up at the back, which would drag the trunk
+      // along when the leg swings).
+      const s = pairs[1];
+      const foot = at(fr, s, footLat(s), footY);
+      const bellyY = raycastAll(m, at(fr, s, latC, minY - h), UP)[0]?.point.y ?? under;
+      const join = legJoin(m, fr, foot, latC, bellyY + 0.15 * (backAt(s) - bellyY));
+      k.midFootL = foot;
+      k.midHipL = at(fr, s, footLat(s), join);
+      k.midKneeL = at(fr, s, footLat(s), footY + 0.5 * (join - footY));
+    }
     if (o.trunk) k.trunkMid = midDepth(m, lerp(head, nose, 0.5), L);
     if (o.jaw) {
       // Chin: a little above the underside of the head, part way back from the snout (under the trunk's base).
@@ -1021,6 +1054,7 @@ const quadruped: Template = {
         k[`${w}TipL`] = tip;
         k[`${w}ElbowL`] = lerp(root, tip, 0.35).addScaledVector(UP, 0.08 * h);
         k[`${w}WristL`] = lerp(root, tip, 0.7).addScaledVector(UP, 0.04 * h);
+        k[`${w}RootL`] = lerp(lerp(shoulders, hips, at0), k[`${w}ElbowL`], 0.25);
       }
     return mirrorMarkers(k, fr, m.center);
   },
@@ -1077,14 +1111,13 @@ const quadruped: Template = {
     } else bones.push(bone("Head", headParent, k.head, k.nose));
     if (k.jawTip) bones.push(jawBone(k, fr, upperLip));
     bones.push(...hornBones(k));
+    // Each wing hangs from the body bone nearest its own root, wherever along the body it is placed.
     if (o.wings)
-      for (let pair = 1; pair <= o.wingPairs; pair++) {
-        const at0 = quadWingAt(pair, o.wingPairs);
-        const base = lerp(k.shoulders, k.hips, at0);
-        const parent = at0 < 0.25 ? "Chest" : at0 < 0.75 ? "Spine" : "Hips";
-        for (const [s] of SIDES)
-          bones.push(...wingBones(k, s, parent, lerp(base, k[`${wingMarker(pair)}Elbow${s}`], 0.25), undefined, pair));
-      }
+      for (let pair = 1; pair <= o.wingPairs; pair++)
+        for (const [s] of SIDES) {
+          const root = k[`${wingMarker(pair)}Root${s}`];
+          bones.push(...wingBones(k, s, wingParent(bones, root), root, undefined, pair));
+        }
     if (o.bipedal && !o.armless)
       for (const [s] of SIDES) {
         const [elbow, wrist] = [k[`elbow${s}`], k[`wrist${s}`]];
@@ -1099,9 +1132,10 @@ const quadruped: Template = {
     for (const [pos, top, parent] of (
       [
         ["Front", k.shoulders, "Chest"],
+        ["Mid", k.back, "Spine"],
         ["Rear", k.hips, "Hips"],
       ] as const
-    ).filter(([pos]) => !(o.bipedal && pos === "Front")))
+    ).filter(([pos]) => !(o.bipedal && pos === "Front") && (pos !== "Mid" || (o.sixLegs && !o.bipedal))))
       for (const [s] of SIDES) {
         const p = pos.toLowerCase();
         const [foot, knee] = [k[`${p}Foot${s}`], k[`${p}Knee${s}`]];
@@ -1109,10 +1143,12 @@ const quadruped: Template = {
         const midLat = lerp(k[`${p}FootL`], k[`${p}FootR`], 0.5).dot(L);
         const hipY = foot.y + 0.85 * (top.y - foot.y);
         const join = legJoin(m, fr, foot, midLat, hipY);
-        const upper = at(fr, ks, kl, Math.max(Math.min(hipY, join + 0.1 * (top.y - foot.y)), knee.y + 0.05 * h));
+        // The middle legs start at their own hip marker, under the body.
+        const hip = k[`${p}Hip${s}`];
+        const upper = hip ?? at(fr, ks, kl, Math.max(Math.min(hipY, join + 0.1 * (top.y - foot.y)), knee.y + 0.05 * h));
         const paw = at(fr, foot.dot(F), foot.dot(L), foot.y + 0.05 * h);
         // Only the leg below where it leaves the body may be its own; the belly and flank above it stay with the trunk.
-        const gate = at(fr, ks, kl, Math.max(Math.min(join, upper.y), knee.y + 0.02 * h));
+        const gate = hip ?? at(fr, ks, kl, Math.max(Math.min(join, upper.y), knee.y + 0.02 * h));
         const leg = (b: BoneSpec) => gated(b, gate, knee);
         bones.push(
           leg(bone(`${pos}UpperLeg${s}`, parent, upper, knee)),
@@ -1257,6 +1293,7 @@ const bird: Template = {
       k[`${w}ElbowL`] = inside(m, lerp(shoulder, tip, 0.35), [F, UP]);
       k[`${w}WristL`] = inside(m, lerp(shoulder, tip, 0.7), [F, UP]);
       k[`${w}TipL`] = tip;
+      k[`${w}RootL`] = birdShoulder(onPlane(base), k[`${w}ElbowL`], L, h, 0.5);
     }
     if (!o.legless) k.footL = foot ?? at(fr, chest.dot(F), latC + 0.3 * halfWidth, minY);
     return mirrorMarkers(k, fr, m.center);
@@ -1277,12 +1314,10 @@ const bird: Template = {
     ];
     for (const [s] of SIDES) {
       for (let pair = 1; pair <= o.wingPairs; pair++) {
-        // The front pair roots on the chest, the others on the body just ahead of their elbows.
-        const elbow = k[`${wingMarker(pair)}Elbow${s}`];
-        const t = pair > 1 ? new Line3(k.chest, k.tailTip).closestPointToPointParameter(elbow, true) * 0.8 : 0;
-        const base = lerp(k.chest, k.tailTip, t);
-        const root = birdShoulder(base, elbow, L, h, 0.5);
-        bones.push(...wingBones(k, s, t < 0.2 ? "Chest" : "Hips", root, { at: base, lateral: L }, pair));
+        // Each wing roots at its own marker, on the body bone nearest to it, gated sideways from the mid-plane.
+        const root = k[`${wingMarker(pair)}Root${s}`];
+        const base = root.clone().addScaledVector(L, k.chest.dot(L) - root.dot(L));
+        bones.push(...wingBones(k, s, wingParent(bones, root), root, { at: base, lateral: L }, pair));
       }
       if (o.legless) continue;
       const foot = k[`foot${s}`];
@@ -1387,7 +1422,7 @@ const fish: Template = {
   build(m, k, o, fr) {
     // Plain fish keep the linear blend along the body; fins, a jaw, horns or feelers need their own weights (heat
     // skinning).
-    if (!o.fins && !o.jaw && !o.horns && !o.feelers)
+    if (!o.fins && !o.jaw && !o.horns && !o.feelers && !o.crests)
       return {
         bones: chainBones(m, FISH_SPINE, k.head, k.tailTip, FISH_STOPS),
         skin: { mode: "chain", bones: FISH_SPINE, start: k.head, end: k.tailTip },
@@ -1787,6 +1822,77 @@ function feelerBones(k: Markers, n: number, bones: BoneSpec[]): BoneSpec[] {
   return out;
 }
 
+export const MAX_CRESTS = 6;
+
+const crestIds = (category: RigCategory, o: RigOptions) =>
+  FEELER_CATEGORIES.includes(category) ? Array.from({ length: o.crests }, (_, i) => [`crestRoot${i + 1}`, `crestTip${i + 1}`]).flat() : [];
+
+/**
+ * Rough crest markers, to drag: the crest is where the top of the body along the mid-plane rises well above the rest;
+ * sections split it evenly, front to back. Each tip is the highest point of its slice near the mid-plane, its root
+ * straight below it where the slice widens into the back.
+ */
+function guessCrests(m: ModelData, fr: Frame, n: number): Markers {
+  const { forward: F, lateral: L } = fr;
+  const { min, len } = range(m, F);
+  const latC = m.center.dot(L);
+  const across = range(m, L).len;
+  const h = m.size.y;
+  const v = new Vector3();
+  // Top of the mid-plane in 40 slices along the body.
+  const bins = 40;
+  const top = new Array<number>(bins).fill(-Infinity);
+  for (let j = 0; j < m.count; j++) {
+    vertexAt(m, j, v);
+    if (Math.abs(v.dot(L) - latC) > 0.15 * across) continue;
+    const b = Math.min(bins - 1, Math.floor(((v.dot(F) - min) / len) * bins));
+    top[b] = Math.max(top[b], v.y);
+  }
+  const seen = top.filter(Number.isFinite);
+  const [low, high] = [Math.min(...seen), Math.max(...seen)];
+  const crest = top.flatMap((y, b) => (y >= (low + high) / 2 ? [b] : []));
+  // From the front end of the crest (highest forward position) to its back end.
+  const [front, back] = [min + ((crest.at(-1)! + 1) / bins) * len, min + (crest[0] / bins) * len];
+  const out: Markers = {};
+  for (let i = 1; i <= n; i++) {
+    const s = front + (back - front) * ((i - 0.5) / n);
+    const slice: Vector3[] = [];
+    for (let j = 0; j < m.count; j++) if (Math.abs(vertexAt(m, j, v).dot(F) - s) < Math.abs(front - back) / (2 * n)) slice.push(v.clone());
+    const middle = slice.filter((p) => Math.abs(p.dot(L) - latC) < 0.15 * across);
+    // Tip: the middle of the highest points (a flat-topped sail has many).
+    const peak = Math.max(...middle.map((p) => p.y));
+    const high = middle.filter((p) => p.y > peak - 0.02 * h);
+    const tip = high.length ? high.reduce((a, p) => a.add(p), new Vector3()).divideScalar(high.length) : at(fr, s, latC, m.box.max.y);
+    const width = (y: number) => {
+      const lats = slice.filter((p) => Math.abs(p.y - y) < 0.02 * h).map((p) => p.dot(L));
+      return lats.length ? Math.max(...lats) - Math.min(...lats) : 0;
+    };
+    // Down from the tip until the slice is several times as wide as the crest just below its tip.
+    const thin = Math.max(width(tip.y - 0.05 * h), 0.02 * h);
+    let y = tip.y - 0.05 * h;
+    while (y > m.box.min.y + 0.3 * h && width(y) < 3 * thin) y -= 0.02 * h;
+    out[`crestTip${i}`] = tip;
+    out[`crestRoot${i}`] = at(fr, tip.dot(F), latC, y);
+  }
+  return out;
+}
+
+/** Three links from each crest section's root to its tip, hanging from the body bone nearest to the root. */
+function crestBones(k: Markers, n: number, bones: BoneSpec[]): BoneSpec[] {
+  const body = bones.filter((b) => b.deform && !b.rigid);
+  const q = new Vector3();
+  const gap = (b: BoneSpec, p: Vector3) => p.distanceTo(new Line3(b.head, b.tail).closestPointToPoint(p, true, q));
+  const out: BoneSpec[] = [];
+  for (let i = 1; i <= n; i++) {
+    const [root, tip] = [k[`crestRoot${i}`], k[`crestTip${i}`]];
+    if (!root || !tip || !body.length) continue;
+    const parent = body.reduce((a, b) => (gap(b, root) < gap(a, root) ? b : a)).name;
+    const joints = [0, 1 / 3, 2 / 3, 1].map((t) => lerp(root, tip, t));
+    for (let j = 0; j < 3; j++) out.push(gated(bone(`Crest${i}_${j + 1}`, j ? `Crest${i}_${j}` : parent, joints[j], joints[j + 1]), root, tip));
+  }
+  return out;
+}
+
 const TEMPLATES: Record<RigCategory, Template> = {
   humanoid,
   quadruped,
@@ -1804,7 +1910,7 @@ const TEMPLATES: Record<RigCategory, Template> = {
 
 /** Marker ids for a category, and which of them follow their left twin while symmetry is on. */
 export function markerIds(category: RigCategory, o: RigOptions) {
-  const ids = [...TEMPLATES[category].markers(o), ...feelerIds(category, o)];
+  const ids = [...TEMPLATES[category].markers(o), ...feelerIds(category, o), ...crestIds(category, o)];
   const own = new Set(TEMPLATES[category].unmirrored?.(o) ?? []);
   const derived = new Set(
     o.symmetry && TEMPLATES[category].mirror !== false
@@ -1816,8 +1922,12 @@ export function markerIds(category: RigCategory, o: RigOptions) {
 
 export function guessMarkers(category: RigCategory, m: ModelData, o: RigOptions): Markers {
   const k = TEMPLATES[category].guess(m, o);
-  if (!feelerIds(category, o).length) return k;
-  return { ...k, ...guessFeelers(m, k, TEMPLATES[category].frame(m, k, o), o.feelers) };
+  const fr = TEMPLATES[category].frame(m, k, o);
+  return {
+    ...k,
+    ...(feelerIds(category, o).length ? guessFeelers(m, k, fr, o.feelers) : {}),
+    ...(crestIds(category, o).length ? guessCrests(m, fr, o.crests) : {}),
+  };
 }
 
 export const rigFrame = (category: RigCategory, m: ModelData, k: Markers, o: RigOptions) =>
@@ -1876,6 +1986,7 @@ export function planRig(category: RigCategory, m: ModelData, k: Markers, o: RigO
   const frame = t.frame(m, k, o);
   const { bones, skin, armFloor, weapons, swim } = t.build(m, k, o, frame);
   if (feelerIds(category, o).length) bones.push(...feelerBones(k, o.feelers, bones));
+  if (crestIds(category, o).length) bones.push(...crestBones(k, o.crests, bones));
   const wheelRadius: Record<string, number> = {};
   if (skin.mode === "rigid") for (const w of skin.wheels) wheelRadius[w.bone] = w.radius;
   return { category, frame, bones, skin, height: m.size.y, length: range(m, frame.forward).len, wheelRadius, armFloor, weapons, swim };

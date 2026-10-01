@@ -23,19 +23,20 @@ export function markerLinks(category: RigCategory, ids: readonly string[]) {
     if (category === "bird") chain("tailTip", "chest", "head");
     for (const side of ["L", "R"]) {
       chain("shoulders", `frontKnee${side}`, `frontFoot${side}`);
+      chain(`midHip${side}`, `midKnee${side}`, `midFoot${side}`);
       chain("hips", `rearKnee${side}`, `rearFoot${side}`);
       chain("shoulders", `elbow${side}`, `wrist${side}`);
       chain("chest", `foot${side}`);
     }
   }
   for (const side of ["L", "R"]) {
-    const root = available.has(`wingRoot${side}`) ? `wingRoot${side}` : available.has("shoulders") ? "shoulders" : "chest";
-    chain(root, `wingElbow${side}`, `wingWrist${side}`, `wingTip${side}`);
-    for (let i = 2; i <= 3; i++) chain(available.has("chest") ? "chest" : "back", `wing${i}Elbow${side}`, `wing${i}Wrist${side}`, `wing${i}Tip${side}`);
+    // Each wing from its own root (not all from the shoulders).
+    for (const w of ["wing", "wing2", "wing3"]) chain(`${w}Root${side}`, `${w}Elbow${side}`, `${w}Wrist${side}`, `${w}Tip${side}`);
     chain(`finRoot${side}`, `finMid${side}`, `finTip${side}`);
     chain("head", `hornTip${side}`);
     for (let i = 1; i <= 4; i++) chain(`feelerRoot${i}${side}`, `feelerTip${i}${side}`);
   }
   chain("head", "hornTip");
+  for (let i = 1; i <= 6; i++) chain(`crestRoot${i}`, `crestTip${i}`);
   return pairs.filter(([a, b], i) => pairs.findIndex(([x, y]) => (x === a && y === b) || (x === b && y === a)) === i);
 }

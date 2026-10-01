@@ -228,8 +228,11 @@ async function heatSkin(m: ModelData, plan: RigPlan, skin: Skin, onProgress?: (p
   // apart. Two limbs (the gated bones under one gated root) never mix; a limb mixes with the trunk bones near it (up to
   // three joints away from its root bone, two from the others).
   const parent = plan.bones.map((b) => plan.bones.findIndex((p) => p.name === b.parent));
+  // The sections of a crest (a sail, a dorsal fin) are one sheet: they blend into each other at the seams.
+  const crest = plan.bones.findIndex((b) => /^Crest\d+_1$/.test(b.name));
   const limb = plan.bones.map((b, i) => {
     if (!b.gate) return -1;
+    if (/^Crest\d+_\d+$/.test(b.name)) return crest;
     let r = i;
     while (parent[r] >= 0 && plan.bones[parent[r]].gate) r = parent[r];
     return r;

@@ -46,6 +46,7 @@ import {
   markerIds,
   markerView,
   type Markers,
+  MAX_CRESTS,
   MAX_FEELERS,
   MAX_WING_PAIRS,
   planRig,
@@ -420,8 +421,10 @@ export function RigEditor({
     if (wheel) return tr.wheel(Number(wheel[1]), wheel[2]);
     const feeler = /^feeler(Root|Tip)(\d+)([LR])$/.exec(id);
     if (feeler) return tr.feeler(Number(feeler[2]), feeler[3], feeler[1] === "Tip");
-    const wing = /^wing(\d)(Elbow|Wrist|Tip)([LR])$/.exec(id);
-    if (wing) return tr.wingJoint(Number(wing[1]), wing[3], wing[2] as "Elbow" | "Wrist" | "Tip");
+    const crest = /^crest(Root|Tip)(\d+)$/.exec(id);
+    if (crest) return tr.crest(Number(crest[2]), crest[1] === "Tip");
+    const wing = /^wing(\d)(Root|Elbow|Wrist|Tip)([LR])$/.exec(id);
+    if (wing) return tr.wingJoint(Number(wing[1]), wing[3], wing[2] as "Root" | "Elbow" | "Wrist" | "Tip");
     return tr.markers[id] ?? id;
   };
   const ready = status === "ready";
@@ -744,6 +747,12 @@ export function RigEditor({
                         <Switch checked={options.bipedal} onCheckedChange={(v) => changeOptions({ ...options, bipedal: v })} />
                       </label>
                     ) : null}
+                    {category === "quadruped" && !options.bipedal ? (
+                      <label className="flex cursor-pointer items-center justify-between gap-3 px-3.5 py-2.5 text-sm font-medium">
+                        {tr.sixLegs}
+                        <Switch checked={options.sixLegs} onCheckedChange={(v) => changeOptions({ ...options, sixLegs: v })} />
+                      </label>
+                    ) : null}
                     {category === "quadruped" && options.bipedal ? (
                       <label className="flex cursor-pointer items-center justify-between gap-3 px-3.5 py-2.5 text-sm font-medium">
                         {tr.armless}
@@ -835,6 +844,32 @@ export function RigEditor({
                     </div>
                   </div>
                 ) : null}
+                {FEELER_CATEGORIES.includes(category) ? (
+                  <div className="flex items-center justify-between gap-3 px-3.5 py-2 text-sm font-medium">
+                    {tr.crests}
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        aria-label="-"
+                        disabled={!options.crests}
+                        onClick={() => changeOptions({ ...options, crests: options.crests - 1 })}
+                      >
+                        <MinusIcon />
+                      </Button>
+                      <span className="w-5 text-center tabular-nums">{options.crests}</span>
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        aria-label="+"
+                        disabled={options.crests >= MAX_CRESTS}
+                        onClick={() => changeOptions({ ...options, crests: options.crests + 1 })}
+                      >
+                        <PlusIcon />
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
                 {category === "serpent" ? (
                   <label className="flex cursor-pointer items-center justify-between gap-3 px-3.5 py-2.5 text-sm font-medium">
                     {tr.legs}
@@ -844,6 +879,9 @@ export function RigEditor({
               </div>
               {FEELER_CATEGORIES.includes(category) && options.feelers ? (
                 <p className="px-1 text-xs leading-snug text-muted-foreground">{tr.feelersHint}</p>
+              ) : null}
+              {FEELER_CATEGORIES.includes(category) && options.crests ? (
+                <p className="px-1 text-xs leading-snug text-muted-foreground">{tr.crestsHint}</p>
               ) : null}
               {category === "humanoid" && (options.weaponRight !== "none" || options.weaponLeft !== "none") ? (
                 <p className="px-1 text-xs leading-snug text-muted-foreground">{tr.weaponHint}</p>

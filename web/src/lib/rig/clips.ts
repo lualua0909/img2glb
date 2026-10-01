@@ -159,13 +159,19 @@ const TRUNK = ["Trunk1", "Trunk2", "Trunk3"];
  */
 type Chain = { bones: string[]; hz: number[]; zeta: number; swing: number };
 
-/** The trunk (stiffer at the base, looser toward the tip) and every feeler (softer: it only follows the motion). */
+/**
+ * The trunk (stiffer at the base, looser toward the tip), every feeler (softer: it only follows the motion) and every
+ * crest section.
+ */
 function chainsOf(r: Rig): Chain[] {
   const out: Chain[] = [];
   if (r.index.has(TRUNK[0])) out.push({ bones: TRUNK, hz: [2.4, 1.8, 1.4], zeta: 0.3, swing: Math.PI / 4 });
   for (const name of r.names) {
     const f = /^Feeler(\d+)_1([LR])$/.exec(name);
     if (f) out.push({ bones: [1, 2, 3].map((j) => `Feeler${f[1]}_${j}${f[2]}`), hz: [1.8, 1.3, 1], zeta: 0.35, swing: 0.6 });
+    // Crest sections (a sail, a dorsal fin) are stiffer: they sway, not flop.
+    const c = /^Crest(\d+)_1$/.exec(name);
+    if (c) out.push({ bones: [1, 2, 3].map((j) => `Crest${c[1]}_${j}`), hz: [2.4, 1.9, 1.5], zeta: 0.35, swing: 0.4 });
   }
   return out;
 }
@@ -249,13 +255,20 @@ function simulateChains(r: Rig, chains: Chain[], duration: number, frames: numbe
 /** Long appendage that drifts on its own (a feeler, a long tail): its links (base first) and the most each turns. */
 type Waft = { bones: string[]; amp: number; seed: number };
 
-/** Every feeler, and the tail when it is long (serpents and fish are all tail: their swim already waves it). */
+/**
+ * Every feeler and crest section, and the tail when it is long (serpents and fish are all tail: their swim already
+ * waves it).
+ */
 function waftsOf(r: Rig): Waft[] {
   const out: Waft[] = [];
   let seed = 1;
+  // One drift for the whole crest, so its sections sway together.
+  const crestSeed = 1000;
   for (const name of r.names) {
     const f = /^Feeler(\d+)_1([LR])$/.exec(name);
     if (f) out.push({ bones: [1, 2, 3].map((j) => `Feeler${f[1]}_${j}${f[2]}`), amp: 0.14, seed: seed++ });
+    const c = /^Crest(\d+)_1$/.exec(name);
+    if (c) out.push({ bones: [1, 2, 3].map((j) => `Crest${c[1]}_${j}`), amp: 0.06, seed: crestSeed });
   }
   if (r.plan.category === "serpent" || r.plan.category === "fish") return out;
   const tail = r.names.filter((n) => /^Tail\d*$/.test(n));
@@ -1225,16 +1238,20 @@ function quadruped(k: Kit): RigClip[] {
       yaw(P, b, a * Math.sin(ph - 0.7 * i));
       pitch(P, b, curl + 0.5 * a * Math.sin(ph - 0.7 * i + 1));
     });
-  /** Legs with gait phase offsets [FL, FR, RL, RR]. */
+  /**
+   * Legs with gait phase offsets [FL, FR, RL, RR]. A middle pair (six legs) steps opposite the front leg on its side,
+   * so the legs ripple in alternating tripods.
+   */
   const legs = (P: Poser, ph: number, offs: number[], amp: number, knee: number) =>
-    (["FrontL", "FrontR", "RearL", "RearR"] as const).forEach((leg, i) => {
+    (["FrontL", "FrontR", "RearL", "RearR", "MidL", "MidR"] as const).forEach((leg, i) => {
       const [pos, side] = [leg.slice(0, -1), leg.slice(-1)];
-      const [s, c] = [Math.sin(ph + offs[i]), Math.cos(ph + offs[i])];
+      const off = i < 4 ? offs[i] : offs[i - 4] + Math.PI;
+      const [s, c] = [Math.sin(ph + off), Math.cos(ph + off)];
       pitch(P, `${pos}UpperLeg${side}`, -amp * s);
       pitch(P, `${pos}LowerLeg${side}`, knee * Math.max(0, c));
     });
   const crouchLegs = (P: Poser, e: number) =>
-    (["FrontL", "FrontR", "RearL", "RearR"] as const).forEach((leg) => {
+    (["FrontL", "FrontR", "MidL", "MidR", "RearL", "RearR"] as const).forEach((leg) => {
       const [pos, side] = [leg.slice(0, -1), leg.slice(-1)];
       pitch(P, `${pos}UpperLeg${side}`, (pos === "Front" ? -0.4 : 0.4) * e);
       pitch(P, `${pos}LowerLeg${side}`, (pos === "Front" ? 0.8 : -0.8) * e);
@@ -1244,8 +1261,10 @@ function quadruped(k: Kit): RigClip[] {
     for (const side of ["L", "R"]) {
       pitch(P, `FrontUpperLeg${side}`, 0.5);
       pitch(P, `FrontLowerLeg${side}`, -1.0);
-      pitch(P, `RearUpperLeg${side}`, 0.8);
-      pitch(P, `RearLowerLeg${side}`, 0.3);
+      for (const pos of ["Mid", "Rear"]) {
+        pitch(P, `${pos}UpperLeg${side}`, 0.8);
+        pitch(P, `${pos}LowerLeg${side}`, 0.3);
+      }
     }
   };
   const fourLegs = has("FrontUpperLegL");
@@ -1794,18 +1813,39 @@ function fish(k: Kit): RigClip[] {
       pitch(P, `${b}L`, 0.25 * amp * Math.cos(ph - 0.7 * i) * (i ? 1 : 0));
       pitch(P, `${b}R`, 0.25 * amp * Math.cos(ph - 0.7 * i) * (i ? 1 : 0));
     });
+  /**
+   * Fin beat like a bird's wingbeat, up when `sin(ph)` > 0: a quick downstroke and a slower upstroke, each joint
+   * lagging well behind the one before it so the fin bends like a whip, the fin twisting into each stroke and the
+   * outer joints sweeping back on the way up.
+   */
+  const finbeat = (P: Poser, ph: number, amp: number) =>
+    FIN.forEach((b, i) => {
+      const p = ph - 1.2 * i;
+      // Warped phase: the downstroke (π/2 -> 3π/2) runs fast, the upstroke slow.
+      const w = p - 0.35 * Math.sin(p);
+      const a = [1, 1.2, 1.5][i] * amp * Math.sin(w);
+      const twist = 0.45 * amp * Math.cos(w);
+      // Swept back most in the middle of the upstroke.
+      const sweep = i ? [0, 0.55, 0.8][i] * Math.min(1, 2 * amp) * ((1 + Math.cos(w)) / 2) ** 2 : 0;
+      roll(P, `${b}L`, a);
+      roll(P, `${b}R`, -a);
+      pitch(P, `${b}L`, twist);
+      pitch(P, `${b}R`, twist);
+      yaw(P, `${b}L`, sweep);
+      yaw(P, `${b}R`, -sweep);
+    });
   /** Opens the jaw (rigs with one): 1 = wide open. */
   const jaw = (P: Poser, open: number) => pitch(P, "Jaw", 0.5 * open);
   /** Swimming: a ray beats its fins (the body rises on the downstroke), the others their tail. */
   const swim = (P: Poser, ph: number, scale: number) => {
     if (ray) {
-      fins(P, ph, 0.7 * scale);
+      finbeat(P, ph, 0.7 * scale);
       wave(P, ph, 0.4 * scale);
       P.move("Root", k.up(-0.04 * H * scale * Math.sin(ph)));
       return;
     }
     wave(P, ph, scale);
-    fins(P, 2 * ph, 0.12 * scale);
+    finbeat(P, ph + 0.6, 0.35 * scale);
     if (style === "whale") P.move("Root", k.up(0.04 * H * Math.sin(ph)));
   };
   const clips = [
@@ -1823,7 +1863,7 @@ function fish(k: Kit): RigClip[] {
     k.clip("08", "Swim_Idle", 3, (_t, P, ph) => {
       P.move("Root", k.up(0.03 * H * Math.sin(ph)));
       wave(P, ph, 0.4);
-      fins(P, ph, ray ? 0.15 : 0.08);
+      finbeat(P, ph, 0.15);
     }),
     // Glide (lướt): fins held out and a little up, rippling at the tips, banking gently.
     ...(ray
