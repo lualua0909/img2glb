@@ -50,3 +50,6 @@ CLAUDE.local.md
 
 # --- Map worker: MoGe checkout (worker/map/setup.sh) ---
 /worker/map/MoGe/
+
+# --- Local test-run outputs ---
+/output/

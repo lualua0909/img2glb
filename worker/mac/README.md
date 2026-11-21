@@ -34,6 +34,14 @@ On the M4 (30 steps, octree 256, 40k faces): models load in ~33 s, shape takes ~
 (6 views x 512) ~495 s, peak RSS ~18 GB. 9 views x 768 (upstream's default) does not fit in 32 GB, so `run.sh`
 sets `PAINT_VIEWS=6` and `PAINT_RESOLUTION=512`.
 
+### 16 GB Macs (`LOW_MEMORY`)
+
+Below 24 GB RAM `run.sh` sets `LOW_MEMORY=1`: same models and settings, but only one of the shape and texture
+pipelines is loaded at a time (the other reloads from disk, ~30 s), DINOv2-giant and the reference UNet (both run
+once per job) wait on the CPU between calls, and attention runs in query chunks (identical result). Without it
+the paint stage alone needs ~19 GB and either runs MPS out of memory or thrashes swap for an hour. On an M4 with
+16 GB (50 steps, octree 380, 150k faces, PBR 6 x 512): shape ~22 min, texture ~10 min, ~32 min per job.
+
 ## Notes
 
 - `hunyuan3d-2.1-mps.patch` makes the pipelines device-agnostic: it removes hardcoded `cuda` devices, makes `bpy`

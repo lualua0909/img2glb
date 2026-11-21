@@ -112,6 +112,13 @@ DEFAULT_GUIDANCE = 7.5
 # PBR paint: views (6-9) and view resolution (512 or 768). Upstream's maximum by default.
 PAINT_VIEWS = int(os.environ.get("PAINT_VIEWS", "9"))
 PAINT_RESOLUTION = int(os.environ.get("PAINT_RESOLUTION", "768"))
+# For hosts below ~24 GB (16 GB Macs), same models and settings: keep only one of the shape and texture pipelines
+# loaded (the other reloads from disk, ~30 s), keep Paint PBR's run-once modules (DINOv2-giant, reference UNet) on
+# the CPU between calls, and run attention in query chunks. Without it the paint stage alone needs ~19 GB and
+# thrashes swap for an hour.
+LOW_MEMORY = os.environ.get("LOW_MEMORY", "0") == "1"
+# Bytes of attention scores per chunk in LOW_MEMORY mode (MPS materializes the full score matrix).
+ATTENTION_CHUNK_BYTES = 256 << 20
 REALESRGAN_CKPT = os.environ.get("REALESRGAN_CKPT", os.path.join(DATA_ROOT, "models", "realesrgan", "RealESRGAN_x4plus.pth"))
 MAX_QUEUE = int(os.environ.get("MAX_QUEUE", "50"))
 JOB_TTL_SECONDS = int(os.environ.get("JOB_TTL_SECONDS", str(3 * 3600)))
@@ -207,21 +214,41 @@ def required_models(cfg: dict) -> set[tuple[str, str]]:
 # ---------------- models ----------------
 class Models:
     def __init__(self, cfg: dict):
-        log.info("loading shape model %s/%s", cfg["shape_model"], cfg["shape_subfolder"])
+        self.cfg = cfg
         self.rembg = remove_background
-        # 2.1 ships fp16 .ckpt weights only
-        self.shape = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
-            cfg["shape_model"], subfolder=cfg["shape_subfolder"], device=DEVICE
-        )
-        self.tex = None
-        if cfg["enable_tex"]:
-            log.info("loading texture model %s/%s", cfg["tex_model"], cfg["tex_subfolder"])
-            self.tex = PaintPBR(cfg)
+        self._shape = self._tex = None
+        self.shape()
+        if cfg["enable_tex"] and not LOW_MEMORY:
+            self.tex()
         self.t2i = None
         if cfg["enable_t2i"]:
             log.info("loading text-to-image model %s", cfg["t2i_model"])
             self.t2i = TextToImage(cfg["t2i_model"])
         self.floater, self.degenerate, self.reducer = FloaterRemover(), DegenerateFaceRemover(), FaceReducer()
+
+    def shape(self) -> "Hunyuan3DDiTFlowMatchingPipeline":
+        if self._shape is None:
+            if LOW_MEMORY and self._tex is not None:
+                self._tex = None
+                free_memory()
+            cfg = self.cfg
+            log.info("loading shape model %s/%s", cfg["shape_model"], cfg["shape_subfolder"])
+            # 2.1 ships fp16 .ckpt weights only
+            self._shape = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+                cfg["shape_model"], subfolder=cfg["shape_subfolder"], device=DEVICE
+            )
+        return self._shape
+
+    def tex(self) -> "PaintPBR":
+        if self._tex is None:
+            if not self.cfg["enable_tex"]:
+                raise RuntimeError("texture generation disabled on this worker")
+            if LOW_MEMORY and self._shape is not None:
+                self._shape = None
+                free_memory()
+            log.info("loading texture model %s/%s", self.cfg["tex_model"], self.cfg["tex_subfolder"])
+            self._tex = PaintPBR(self.cfg)
+        return self._tex
 
 
 class TextToImage:
@@ -275,6 +302,13 @@ class PaintPBR:
         conf.multiview_cfg_path = os.path.join(HY21_REPO, "hy3dpaint", "cfgs", "hunyuan-paint-pbr.yaml")
         conf.custom_pipeline = os.path.join(HY21_REPO, "hy3dpaint", "hunyuanpaintpbr")
         self.pipe = Hunyuan3DPaintPipeline(conf)
+        if LOW_MEMORY:
+            # Both run once per job (reference image features, cached for every denoising step).
+            mvm = self.pipe.models["multiview_model"]
+            park_between_calls(mvm.dino_v2)
+            if getattr(mvm.pipeline.unet, "unet_dual", None) is not None:
+                park_between_calls(mvm.pipeline.unet.unet_dual)
+            empty_cache()
 
     def __call__(self, mesh: trimesh.Trimesh, image: Image.Image, refs: Optional[list[Image.Image]] = None,
                  views: Optional[list["mv.View"]] = None, fit: Optional["mv.Fit"] = None,
@@ -431,6 +465,53 @@ class Runtime:
         finally:
             self.loading = False
             empty_cache()
+
+
+def park_between_calls(module: torch.nn.Module):
+    """Keep `module` on the CPU except while it runs: idle there, the OS can page it out (LOW_MEMORY)."""
+    def to_device(m, args):
+        m.to(DEVICE)
+
+    def to_cpu(m, args, out):
+        m.to("cpu")
+
+    module.to("cpu")
+    module.register_forward_pre_hook(to_device)
+    module.register_forward_hook(to_cpu)
+
+
+def chunk_attention():
+    """Run scaled_dot_product_attention in query chunks off CUDA (LOW_MEMORY). MPS has no memory-efficient kernel
+    and materializes the whole score matrix (~6 GB for Paint PBR's per-view self-attention); rows are independent,
+    so the result is the same."""
+    import torch.nn.functional as F
+
+    sdpa = F.scaled_dot_product_attention
+
+    def chunked(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, **kw):
+        q_len = query.shape[-2]
+        row_bytes = query[..., :1, :1].numel() * key.shape[-2] * query.element_size()
+        rows = max(1, ATTENTION_CHUNK_BYTES // max(1, row_bytes))
+        if query.device.type == "cuda" or is_causal or rows >= q_len:
+            return sdpa(query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, **kw)
+        out = []
+        for i in range(0, q_len, rows):
+            mask = attn_mask
+            if mask is not None and mask.dim() >= 2 and mask.shape[-2] == q_len:
+                mask = mask[..., i : i + rows, :]
+            out.append(sdpa(query[..., i : i + rows, :], key, value, attn_mask=mask, dropout_p=dropout_p, **kw))
+        return torch.cat(out, dim=-2)
+
+    F.scaled_dot_product_attention = chunked
+
+
+if LOW_MEMORY and not DEVICE.startswith("cuda"):
+    chunk_attention()
+
+
+def free_memory():
+    gc.collect()
+    empty_cache()
 
 
 def empty_cache():
@@ -811,12 +892,11 @@ def run(models: Models, job: Job, sw: Stopwatch):
         job.timings["wing_sheets"] = len(sheets)
 
     if p.texture:
-        if models.tex is None:
-            raise RuntimeError("texture generation disabled on this worker")
         job.enter("Painting texture")
         t = time.time()
         refs = [mv.square(v.image) for v in views if v.name != "main"] if p.paint_all_views else None
-        mesh, fit = models.tex(mesh, image, refs, views, fit, on_project=lambda: job.enter("Projecting views"))
+        mesh, fit = models.tex()(mesh, image, refs, views, fit, on_project=lambda: job.enter("Projecting views"))
+        free_memory()  # the MPS allocator keeps ~16 GB cached after painting
         sw.lap("texture", t)
         if p.texture_size:
             cap_textures(mesh, p.texture_size)
@@ -833,10 +913,13 @@ def generate_shape(models: Models, job: Job, image: Image.Image, matcher: mv.Mat
     at full resolution."""
     p = job.params
     n = p.shape_candidates
+    shape = models.shape()
+    # On low-memory MPS, limit the VAE's intermediate tensors per batch of query points.
+    decode_chunk_size = 20000 if LOW_MEMORY and DEVICE == "mps" else 200000
     best = None  # (score, latents)
     for i in range(n):
         job.enter(shape_stage(i, n))
-        latents = models.shape(
+        latents = shape(
             image=image,
             num_inference_steps=p.num_inference_steps,
             guidance_scale=p.guidance_scale or DEFAULT_GUIDANCE,
@@ -848,7 +931,7 @@ def generate_shape(models: Models, job: Job, image: Image.Image, matcher: mv.Mat
         if n == 1:
             best = (0.0, latents)
             break
-        coarse = models.shape._export(latents, octree_resolution=128, num_chunks=200000, mc_algo="mc", enable_pbar=False)[0]
+        coarse = shape._export(latents, octree_resolution=128, num_chunks=decode_chunk_size, mc_algo="mc", enable_pbar=False)[0]
         if coarse is None:
             log.info("shape candidate %d (seed %d): empty", i + 1, p.seed + i)
             continue
@@ -860,7 +943,9 @@ def generate_shape(models: Models, job: Job, image: Image.Image, matcher: mv.Mat
             best = (score, latents)
     if best is None:
         raise RuntimeError("no shape candidate produced a surface")
-    mesh = models.shape._export(best[1], octree_resolution=p.octree_resolution, num_chunks=200000, mc_algo="mc")[0]
+    if LOW_MEMORY and DEVICE == "mps":
+        empty_cache()
+    mesh = shape._export(best[1], octree_resolution=p.octree_resolution, num_chunks=decode_chunk_size, mc_algo="mc")[0]
     if mesh is None:
         raise RuntimeError("the shape model produced no surface")
     return mesh

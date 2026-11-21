@@ -17,6 +17,8 @@ export ENABLE_T2I="${ENABLE_T2I:-0}"                     # text-to-3D (HunyuanDi
 # PBR paint views x resolution. 9 x 768 (upstream max) needs >32 GB: on a 32 GB M4 it swaps for 20+ min.
 export PAINT_VIEWS="${PAINT_VIEWS:-6}"
 export PAINT_RESOLUTION="${PAINT_RESOLUTION:-512}"
+# Below 24 GB RAM (16 GB Macs): same models and settings, one pipeline loaded at a time (see LOW_MEMORY in server.py).
+[ "$(sysctl -n hw.memsize)" -lt 25769803776 ] && export LOW_MEMORY="${LOW_MEMORY:-1}"
 export ALLOWED_IMAGE_HOSTS="${ALLOWED_IMAGE_HOSTS:-localhost}" # web app serves inputs from localhost (STORAGE_DRIVER=local)
 export HY3DGEN_MODELS="$DATA/models/hy3dgen"
 exec .venv/bin/python server.py
